@@ -1,0 +1,20 @@
+[package]
+name = "calabaza-faction"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Hardcore faction and guild system skeleton for PumpkinMC"
+repository = "https://github.com/MaharlikaPMDev/CalabazaFaction"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pumpkin-plugin-api = { git = "https://github.com/Pumpkin-MC/Pumpkin", rev = "37437ee0a013f3d8a776227516be151f5a490b4c", package = "pumpkin-plugin-api" }
+tracing = "0.1"
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = "s"
+strip = true

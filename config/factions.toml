@@ -1,0 +1,23 @@
+# CalabazaFaction design defaults. Gameplay is not enabled in v0.1.0.
+
+[factions]
+max_members = 20
+power_per_member = 10.0
+power_loss_on_death = 2.0
+power_regeneration_per_hour = 1.0
+max_claims_per_power = true
+claim_size = "chunk"
+
+[war]
+enabled = false
+grace_period_minutes = 30
+raid_window_minutes = 120
+shield_cooldown_hours = 24
+core_capture_required = true
+
+[relations]
+allowed = ["neutral", "truce", "ally", "enemy"]
+
+[storage]
+backend = "json"
+autosave_seconds = 30
