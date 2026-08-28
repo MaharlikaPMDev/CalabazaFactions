@@ -1,6 +1,6 @@
 [package]
 name = "calabaza-factions"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "MIT"
 description = "Hardcore faction and guild system for PumpkinMC"
@@ -14,6 +14,7 @@ pumpkin-plugin-api = { git = "https://github.com/Pumpkin-MC/Pumpkin", rev = "374
 tracing = "0.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+toml = "0.9"
 
 [profile.release]
 lto = true

@@ -1,50 +1,34 @@
-# CalabazaFaction Roadmap
+# CalabazaFactions Roadmap
 
-## 0.1 — Foundation (current)
+## v0.2 — Playable factions release
 
-- Renamed plugin identity to `CalabazaFactions`.
-- Safe-loading Rust/WASM plugin with serializable factions, roles, relations, claims, wars, mail, and trade state.
-- Implemented create/delete, invite/application visibility rules, membership lookup API, claims/power checks, overclaim detection, prison prerequisites, and consensual/forced war state creation.
-- Seed configuration and documented domain model.
-- Pumpkin event wiring, persistence adapter, GUI forms/inventory views, and live teleport/combat enforcement remain future work.
+- [x] Rename plugin and repository to `CalabazaFactions`.
+- [x] Creation, deletion, invitations, applications, and public/private factions.
+- [x] Leader, officer, veteran, member, and recruit identity roles.
+- [x] Faction bank, player wallet, power, claims, protection, and enemy overclaims.
+- [x] Neutral, truce, ally, and enemy diplomacy with friendly-fire protection.
+- [x] Faction Mail for applications, invitations, diplomacy, and wars.
+- [x] Consensual and forced wars, 72-hour requests, preparation, readiness, arena teleport, and 30-minute battles.
+- [x] POW capture, ransom, 24-hour release, and prison-boundary enforcement.
+- [x] Power/troop-based war reparations.
+- [x] Alliance-only item trade mailbox with capacity protection.
+- [x] Java inventory faction page and Bedrock Forms page.
+- [x] Atomic JSON persistence, backup, audit log, and public API snapshot.
+- [x] Event-driven implementation without a repeating scheduler or Tokio blocking.
 
-## 0.2 — Identity and persistence
+## v0.3 — Production hardening
 
-- Pumpkin command tree for the implemented create/delete/invite/apply/member/relation/claim/prison/war operations.
-- Faction join/leave, ownership transfer, role permissions, and Faction Mail UI.
-- JSON backend with migrations, atomic writes, backups, and audit events.
-- `/faction` command tree and permission namespace `CalabazaFaction:command.faction`.
-
-## 0.3 — Territory and protection
-
-- Chunk claim/unclaim/map, faction home, wilderness and safe-zone policies.
-- Server-authoritative block/container/entity interaction checks.
-- Power ledger, death penalties, regeneration, over-claim rules, and admin inspection.
-
-## 0.4 — Diplomacy and hardcore war
-
-- Neutral/truce/ally/enemy relations and friendly-fire policy.
-- War declarations, attack windows, raid shields, cooldowns, and grace periods.
-- Faction core objectives, capture state machine, siege logs, and crash-safe resolution.
-
-## 0.5 — MMO guild layer
-
-- Faction bank, upgrades, permissions matrix, ranks, banners, homes, and member progression.
-- Java inventory GUI and Bedrock forms with identical actions.
-- Territory map overlays, scoreboards, notifications, and localization.
-
-## 0.6 — Scale and operations
-
-- SQLite/Postgres adapters, multi-server locking, snapshots, and repair tooling.
-- Performance/load tests for large claim maps and concurrent raids.
-- Admin dashboard, moderation/audit exports, and automated Pumpkin compatibility tests.
-
-## Future research
-
-- Compare power versus deaths-till-raidable balancing on test servers.
-- Verify the stable Pumpkin event APIs needed for claims and combat enforcement.
-- Define Java/Bedrock packet and UI fallbacks before committing to custom client assets.
+- [ ] Persist full item data components for trade mail, including enchantments, names, lore, and custom data.
+- [ ] Add configurable multi-arena selection and spawn groups per faction side.
+- [ ] Add explicit war shield/cooldown and post-war grace-period state.
+- [ ] Add safe-zone and war-zone administration independent of faction claims.
+- [ ] Add container, piston, explosion, fluid, and entity-grief protection coverage.
+- [ ] Add faction cores, upgrade trees, banners, and configurable rank permission matrices.
+- [ ] Add localized messages, scoreboards, richer map overlays, and GUI actions for every command.
+- [ ] Add SQLite/Postgres adapters and multi-server coordination.
+- [ ] Add load tests, crash-recovery fixtures, and live Pumpkin integration tests.
+- [ ] Adopt a host-backed inter-plugin service API when Pumpkin exposes one.
 
 ## Note for future session agents
 
-Treat `src/domain.rs` as the server-authoritative contract. Preserve atomic state transitions and the `FactionLookup` trait when wiring Pumpkin events, commands, Java inventories, Bedrock forms, teleport arenas, POW timers, and trade mailbox inventories. Do not block Tokio runtime threads; all persistence and UI callbacks must remain async-safe.
+`src/domain.rs` is the server-authoritative contract. Preserve atomic transitions, UUID-based identity, the `FactionLookup` trait, and `api.json` schema compatibility. Never use `block_on`, nested Tokio runtimes, or Pumpkin's scheduler from ticker/runtime callbacks. Timed war and POW transitions are intentionally processed from commands and player events. Any new inventory persistence must round-trip every item component before the current registry-key/count limitation is removed from the README.
