@@ -1,14 +1,17 @@
 # CalabazaFaction Roadmap
 
-## 0.1 — Skeleton (current)
+## 0.1 — Foundation (current)
 
-- Safe-loading Rust/WASM plugin.
+- Renamed plugin identity to `CalabazaFactions`.
+- Safe-loading Rust/WASM plugin with serializable factions, roles, relations, claims, wars, mail, and trade state.
+- Implemented create/delete, invite/application visibility rules, membership lookup API, claims/power checks, overclaim detection, prison prerequisites, and consensual/forced war state creation.
 - Seed configuration and documented domain model.
-- No gameplay behavior enabled until event and persistence tests exist.
+- Pumpkin event wiring, persistence adapter, GUI forms/inventory views, and live teleport/combat enforcement remain future work.
 
 ## 0.2 — Identity and persistence
 
-- Faction create/disband, invite, join/leave, ownership transfer, and role permissions.
+- Pumpkin command tree for the implemented create/delete/invite/apply/member/relation/claim/prison/war operations.
+- Faction join/leave, ownership transfer, role permissions, and Faction Mail UI.
 - JSON backend with migrations, atomic writes, backups, and audit events.
 - `/faction` command tree and permission namespace `CalabazaFaction:command.faction`.
 
@@ -41,3 +44,7 @@
 - Compare power versus deaths-till-raidable balancing on test servers.
 - Verify the stable Pumpkin event APIs needed for claims and combat enforcement.
 - Define Java/Bedrock packet and UI fallbacks before committing to custom client assets.
+
+## Note for future session agents
+
+Treat `src/domain.rs` as the server-authoritative contract. Preserve atomic state transitions and the `FactionLookup` trait when wiring Pumpkin events, commands, Java inventories, Bedrock forms, teleport arenas, POW timers, and trade mailbox inventories. Do not block Tokio runtime threads; all persistence and UI callbacks must remain async-safe.
