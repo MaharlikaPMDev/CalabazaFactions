@@ -7,7 +7,7 @@ CalabazaFactions is a playable hardcore faction and guild-warfare plugin for [Pu
 - Public and invitation-only factions, applications, invitations, identity roles, leadership transfer, kicking, leaving, and disbanding.
 - Persistent faction wallets/banks, member-based power limits, death power loss, chunk claims, protection, and enemy overclaims.
 - Neutral, truce, ally, and enemy relations with friendly-fire protection.
-- Consensual 72-hour war requests and immediate forced declarations, configurable preparation up to 12 hours, leader readiness, five-minute accelerated preparation, and 30-minute arena battles.
+- Consensual 72-hour war requests and immediate forced declarations, configurable preparation up to 12 hours, leader readiness, five-minute accelerated preparation, and 30-minute arena battles. A global war slot prevents overlapping requests, preparations, or battles.
 - POW capture during active wars, faction-bank ransom, configurable 24-hour imprisonment, and a ten-block prison boundary.
 - War reparations based on base cost, power difference, and troop count.
 - Persistent Faction Mail for applications, invitations, diplomacy, and war notices.
@@ -21,7 +21,7 @@ CalabazaFactions is a playable hardcore faction and guild-warfare plugin for [Pu
 1. Download `CalabazaFactions.wasm` from the latest release.
 2. Put it in Pumpkin's `plugins` directory.
 3. Start the server. Configuration and state are created under `plugins/data/CalabazaFactions/`.
-4. An administrator must stand in the battle arena and run `/faction setarena` before wars can begin.
+4. An administrator runs `/faction setarena`, then carefully taps the Team 1 spawn block followed by the Team 2 spawn block. This one-time setup persists both positions; rerun the wizard only to replace them.
 5. Each faction must run `/faction setprison` before declaring or receiving a war.
 
 The plugin targets the Pumpkin API commit pinned in `Cargo.toml` and Minecraft Java 26.2-era Pumpkin builds.
@@ -36,6 +36,8 @@ Permissions:
 
 - `CalabazaFactions:command.faction` — standard player command, allowed by default.
 - `CalabazaFactions:command.admin` — administrative arena configuration, operator level 3 by default.
+
+Faction essentials include `/faction sethome`, `/faction home`, `/faction kick <player>`, `/faction info [faction]`, and `/faction setinfo <description>`.
 
 ## Public integration API
 

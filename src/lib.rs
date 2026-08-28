@@ -16,7 +16,7 @@ use pumpkin_plugin_api::{
     events::{
         BedrockFormResponseEvent, BlockBreakEvent, BlockPlaceEvent, EntityDamageByEntityEvent,
         EventData, EventHandler, EventPriority, InventoryClickEvent, InventoryCloseEvent,
-        PlayerDeathEvent, PlayerJoinEvent, PlayerLeaveEvent, PlayerMoveEvent,
+        PlayerDeathEvent, PlayerInteractEvent, PlayerJoinEvent, PlayerLeaveEvent, PlayerMoveEvent,
     },
     forms::FormResponse,
     permission::{Permission, PermissionDefault, PermissionLevel},
@@ -58,6 +58,7 @@ impl Plugin for CalabazaFactions {
         context.register_event_handler(Damage(app.clone()), EventPriority::High, true)?;
         context.register_event_handler(Death(app.clone()), EventPriority::Normal, true)?;
         context.register_event_handler(Move(app.clone()), EventPriority::High, true)?;
+        context.register_event_handler(Interact(app.clone()), EventPriority::Highest, true)?;
         context.register_event_handler(Click(app.clone()), EventPriority::Highest, true)?;
         context.register_event_handler(Close(app.clone()), EventPriority::Normal, true)?;
         context.register_event_handler(Form(app), EventPriority::Normal, true)?;
@@ -175,7 +176,7 @@ fn execute(
     let now = App::now();
     match action.as_str(){
         "menu"|"page"=>{ui::open_faction(app,player);Ok(String::new())},
-        "help"=>Ok("/faction create <name> [public|private], disband, invite/apply/join/accept, leave/kick/role/transfer, public/private, claim/unclaim/overclaim/map, sethome/home, bank, relation, setprison, war/forcewar/waraccept/wardecline/ready, paypow, mail, trade/tradeinbox".into()),
+        "help"=>Ok("/faction create <name> [public|private], info/setinfo, disband, invite/apply/join/accept, leave/kick/role/transfer, public/private, claim/unclaim/overclaim/map, sethome/home, bank, relation, setprison, war/forcewar/waraccept/wardecline/ready, paypow, mail, trade/tradeinbox".into()),
         "create"=>{let name=*words.get(1).ok_or("usage: /faction create <name> [public|private]")?;let vis=if words.get(2).is_some_and(|v|v.eq_ignore_ascii_case("private")){Visibility::Private}else{Visibility::Public};let id=app.mutate(&player_id,"create",|s|s.create(name,&player_id,vis,now,app.config.factions.starting_power))?;Ok(format!("Faction {id} created."))},
         "disband"=>{app.mutate(&player_id,"disband",|s|{let id=require_leader(s,&player_id)?;s.delete(&id)})?;Ok("Faction disbanded.".into())},
         "invite"=>{let name=*words.get(1).ok_or("usage: /faction invite <player>")?;let target=resolve_player(app,server,name).ok_or("player must have joined this server before")?;app.mutate(&player_id,"invite",|s|{let id=require_manager(s,&player_id)?;s.invite(&id,&target,now+72*3600)?;s.send_mail(&id,"Invitation sent",&format!("{} invited {name}",s.player_names.get(&player_id).cloned().unwrap_or_default()),now);Ok(())})?;Ok(format!("Invited {name}."))},
@@ -187,6 +188,8 @@ fn execute(
         "role"=>{let name=*words.get(1).ok_or("usage: /faction role <player> <officer|veteran|member|recruit>")?;let role=Role::parse(words.get(2).ok_or("missing role")?).ok_or("invalid role")?;if role==Role::Leader{return Err("use /faction transfer".into())}let target=resolve_player(app,server,name).ok_or("unknown player")?;app.mutate(&player_id,"role",|s|{let id=require_leader(s,&player_id)?;s.factions.get_mut(&id).unwrap().members.get_mut(&target).map(|r|*r=role).ok_or_else(||"player is not a member".to_string())})?;Ok(format!("Updated {name}'s role."))},
         "transfer"=>{let name=*words.get(1).ok_or("usage: /faction transfer <player>")?;let target=resolve_player(app,server,name).ok_or("unknown player")?;app.mutate(&player_id,"transfer",|s|{let id=require_leader(s,&player_id)?;let f=s.factions.get_mut(&id).unwrap();if !f.members.contains_key(&target){return Err("player is not a member".into())}f.members.insert(player_id.clone(),Role::Officer);f.members.insert(target.clone(),Role::Leader);f.leader=target.clone();Ok(())})?;Ok(format!("Leadership transferred to {name}."))},
         "public"|"private"=>{let vis=if action=="public"{Visibility::Public}else{Visibility::Private};app.mutate(&player_id,"visibility",|s|{let id=require_manager(s,&player_id)?;s.factions.get_mut(&id).unwrap().visibility=vis;Ok(())})?;Ok(format!("Faction is now {action}."))},
+        "setinfo"=>{let info=words.get(1..).ok_or("usage: /faction setinfo <description>")?.join(" ");if info.is_empty(){return Err("description cannot be empty".into())}else if info.chars().count()>160{return Err("description cannot exceed 160 characters".into())}app.mutate(&player_id,"setinfo",|s|{let id=require_manager(s,&player_id)?;s.factions.get_mut(&id).unwrap().description=info;Ok(())})?;Ok("Faction description updated.".into())},
+        "info"=>{let s=app.state.lock().unwrap_or_else(|e|e.into_inner());let id=if let Some(name)=words.get(1){FactionState::normalize(name)}else{require_faction(&s,&player_id)?};let f=s.factions.get(&id).ok_or("faction not found")?;Ok(format!("{} • {:?}\n{}\nPower {}/{} • Bank {} • Members {} • Claims {}",f.name,f.visibility,if f.description.is_empty(){"No description set."}else{&f.description},f.power,f.max_power,f.bank,f.members.len(),f.claims.len()))},
         "claim"=>{let claim=App::claim_at(player);app.mutate(&player_id,"claim",|s|{let id=require_manager(s,&player_id)?;s.claim(&id,claim)})?;Ok("Chunk claimed.".into())},
         "overclaim"=>{let claim=App::claim_at(player);let previous=app.mutate(&player_id,"overclaim",|s|{let id=require_manager(s,&player_id)?;s.overclaim(&id,claim)})?;Ok(format!("Overclaimed this chunk from {previous}."))},
         "unclaim"=>{let claim=App::claim_at(player);app.mutate(&player_id,"unclaim",|s|{let id=require_manager(s,&player_id)?;if !s.factions.get_mut(&id).unwrap().claims.remove(&claim){return Err("your faction does not own this chunk".into())}Ok(())})?;Ok("Chunk unclaimed.".into())},
@@ -195,7 +198,7 @@ fn execute(
         "home"=>{let s=app.state.lock().unwrap_or_else(|e|e.into_inner());let id=require_faction(&s,&player_id)?;let loc=s.factions[&id].home.clone().ok_or("faction home is not set")?;drop(s);teleport(server,player,&loc)?;Ok("Teleported to faction home.".into())},
         "bank"=>bank_command(app,&player_id,&words),
         "relation"=>{let target=FactionState::normalize(words.get(1).ok_or("usage: /faction relation <faction> <neutral|truce|ally|enemy>")?);let relation=Relation::parse(words.get(2).ok_or("missing relation")?).ok_or("invalid relation")?;app.mutate(&player_id,"relation",|s|{let id=require_manager(s,&player_id)?;s.set_relation(&id,&target,relation.clone())?;s.send_mail(&target,"Diplomacy updated",&format!("{id} set relations to {relation:?}."),now);Ok(())})?;Ok(format!("Relation with {target}: {relation:?}."))},
-        "setarena"=>{if !is_admin{return Err("admin permission required".into())}let loc=App::location(player);app.mutate(&player_id,"setarena",|s|{s.arena=Some(loc);Ok(())})?;Ok("War arena set.".into())},
+        "setarena"=>{if !is_admin{return Err("admin permission required".into())}app.arena_setup.lock().unwrap_or_else(|e|e.into_inner()).insert(player_id.clone(),None);Ok("Arena setup started. Carefully tap the block that should be Team 1's spawn.".into())},
         "war"|"forcewar"=>start_war(app,&player_id,words.get(1).ok_or("usage: /faction war <faction>")?,action=="forcewar",now),
         "waraccept"|"wardecline"=>answer_war(app,&player_id,action=="waraccept",now),
         "ready"=>ready_war(app,server,&player_id,now),
@@ -255,6 +258,17 @@ fn start_war(app: &App, p: &str, target: &str, forced: bool, now: u64) -> Result
     let target = FactionState::normalize(target);
     app.mutate(p, "war", |s| {
         let attacker = require_leader(s, p)?;
+        if s.war_slot_busy() {
+            return Err(
+                "the global war slot is occupied; wait for the current request or war to finish"
+                    .into(),
+            );
+        }
+        if s.arena.is_none() || s.arena_team2.is_none() {
+            return Err(
+                "an admin must complete /faction setarena before wars can be declared".into(),
+            );
+        }
         if !s.factions.contains_key(&target) {
             return Err("target faction not found".into());
         }
@@ -450,22 +464,104 @@ fn process_wars(app: &App, server: &Server) {
 }
 fn teleport_active_wars(app: &App, server: &Server) {
     let s = app.state.lock().unwrap_or_else(|e| e.into_inner());
-    let Some(arena) = s.arena.clone() else { return };
-    let participants = s
+    let (Some(team1_spawn), Some(team2_spawn)) = (s.arena.clone(), s.arena_team2.clone()) else {
+        return;
+    };
+    let Some(war) = s
         .wars
         .values()
         .filter(|w| w.status == WarStatus::Active)
-        .flat_map(|w| [&w.attacker, &w.defender])
-        .flat_map(|id| s.factions.get(id))
-        .flat_map(|f| f.members.keys())
+        .min_by_key(|w| w.requested_at)
+    else {
+        return;
+    };
+    let team1 = s.factions[&war.attacker]
+        .members
+        .keys()
+        .cloned()
+        .collect::<HashSet<_>>();
+    let team2 = s.factions[&war.defender]
+        .members
+        .keys()
         .cloned()
         .collect::<HashSet<_>>();
     drop(s);
     for p in server.get_all_players() {
-        if participants.contains(&pid(&p)) {
-            let _ = teleport(server, &p, &arena);
+        let id = pid(&p);
+        let spawn = if team1.contains(&id) {
+            Some(&team1_spawn)
+        } else if team2.contains(&id) {
+            Some(&team2_spawn)
+        } else {
+            None
+        };
+        if let Some(spawn) = spawn {
+            let _ = teleport(server, &p, spawn);
             p.send_system_message(TextComponent::text("The faction war has begun. Attackers have 30 minutes to defeat the defending leader."),false);
         }
+    }
+}
+
+struct Interact(Arc<App>);
+impl EventHandler<PlayerInteractEvent> for Interact {
+    fn handle(
+        &self,
+        _: Server,
+        mut event: EventData<PlayerInteractEvent>,
+    ) -> EventData<PlayerInteractEvent> {
+        let id = pid(&event.player);
+        let pending = self
+            .0
+            .arena_setup
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&id)
+            .cloned();
+        let (Some(step), Some(pos)) = (pending, event.clicked_pos) else {
+            return event;
+        };
+        event.cancelled = true;
+        let location = Location {
+            world: event.player.get_world().get_id(),
+            x: f64::from(pos.x) + 0.5,
+            y: f64::from(pos.y) + 1.0,
+            z: f64::from(pos.z) + 0.5,
+        };
+        if step.is_none() {
+            self.0
+                .arena_setup
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(id, Some(location));
+            event.player.send_system_message(
+                TextComponent::text(
+                    "Team 1 spawn recorded. Now carefully tap Team 2's spawn block.",
+                ),
+                false,
+            );
+        } else if let Some(team1) = step {
+            self.0
+                .arena_setup
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&id);
+            match self.0.mutate(&id, "setarena", |state| {
+                state.arena = Some(team1);
+                state.arena_team2 = Some(location);
+                Ok(())
+            }) {
+                Ok(()) => event.player.send_system_message(
+                    TextComponent::text(
+                        "Arena setup complete. Team 1 and Team 2 spawns are saved.",
+                    ),
+                    false,
+                ),
+                Err(error) => event
+                    .player
+                    .send_system_message(TextComponent::text(&error), false),
+            }
+        }
+        event
     }
 }
 
@@ -506,6 +602,11 @@ impl EventHandler<PlayerLeaveEvent> for Leave {
         let id = pid(&event.player);
         self.0
             .menus
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&id);
+        self.0
+            .arena_setup
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(&id);

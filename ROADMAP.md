@@ -9,6 +9,8 @@
 - [x] Neutral, truce, ally, and enemy diplomacy with friendly-fire protection.
 - [x] Faction Mail for applications, invitations, diplomacy, and wars.
 - [x] Consensual and forced wars, 72-hour requests, preparation, readiness, arena teleport, and 30-minute battles.
+- [x] Persistent two-spawn arena setup wizard and single global war scheduling lock.
+- [x] Faction home, kick, public info, and editable 160-character descriptions.
 - [x] POW capture, ransom, 24-hour release, and prison-boundary enforcement.
 - [x] Power/troop-based war reparations.
 - [x] Alliance-only item trade mailbox with capacity protection.

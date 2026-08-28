@@ -24,6 +24,7 @@ pub struct App {
     pub forms: Mutex<HashMap<u32, String>>,
     pub menus: Mutex<HashMap<String, String>>,
     pub trades: Mutex<HashMap<String, TradeView>>,
+    pub arena_setup: Mutex<HashMap<String, Option<Location>>>,
     pub last_hits: Mutex<HashMap<i32, (String, u64)>>,
 }
 
@@ -38,6 +39,7 @@ impl App {
             forms: Mutex::new(HashMap::new()),
             menus: Mutex::new(HashMap::new()),
             trades: Mutex::new(HashMap::new()),
+            arena_setup: Mutex::new(HashMap::new()),
             last_hits: Mutex::new(HashMap::new()),
         })
     }

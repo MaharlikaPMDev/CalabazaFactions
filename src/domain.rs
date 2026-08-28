@@ -172,6 +172,8 @@ pub struct FactionState {
     pub mail: HashMap<String, Vec<Mail>>,
     pub trade: HashMap<String, Vec<TradeItem>>,
     pub arena: Option<Location>,
+    #[serde(default)]
+    pub arena_team2: Option<Location>,
     pub audit: Vec<AuditEvent>,
 }
 impl Default for FactionState {
@@ -190,6 +192,7 @@ impl Default for FactionState {
             mail: HashMap::new(),
             trade: HashMap::new(),
             arena: None,
+            arena_team2: None,
             audit: vec![],
         }
     }
@@ -429,6 +432,14 @@ impl FactionState {
                 && ((w.attacker == a && w.defender == b) || (w.attacker == b && w.defender == a))
         })
     }
+    pub fn war_slot_busy(&self) -> bool {
+        self.wars.values().any(|war| {
+            matches!(
+                war.status,
+                WarStatus::Requested | WarStatus::Preparing | WarStatus::Active
+            )
+        })
+    }
 }
 
 pub trait FactionLookup {
@@ -521,5 +532,30 @@ mod tests {
         s.factions.get_mut("aaa").unwrap().power = 0;
         s.set_relation("aaa", "bbb", Relation::Enemy).unwrap();
         assert_eq!(s.overclaim("bbb", claim).unwrap(), "aaa");
+    }
+    #[test]
+    fn global_war_slot_tracks_live_lifecycle() {
+        let mut s = FactionState::default();
+        let mut war = War {
+            id: "war".into(),
+            attacker: "a".into(),
+            defender: "b".into(),
+            forced: false,
+            status: WarStatus::Requested,
+            requested_at: 1,
+            request_expires_at: 2,
+            preparation_ends_at: None,
+            battle_ends_at: None,
+            ready: Default::default(),
+            prisoners: Default::default(),
+            winner: None,
+            loser: None,
+            reparations: 0,
+        };
+        s.wars.insert("war".into(), war.clone());
+        assert!(s.war_slot_busy());
+        war.status = WarStatus::Finished;
+        s.wars.insert("war".into(), war);
+        assert!(!s.war_slot_busy());
     }
 }

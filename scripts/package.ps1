@@ -1,4 +1,4 @@
-param([string]$Version = "0.2.0")
+param([string]$Version = "0.2.1")
 $ErrorActionPreference = "Stop"
 $cargoPath = "C:\Users\Administrator\.cargo\bin\cargo.exe"
 & $cargoPath +stable-x86_64-pc-windows-gnu build --release --locked --target wasm32-wasip2

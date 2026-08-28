@@ -20,7 +20,12 @@ pub fn open_faction(app: &App, player: &Player) {
         (
             format!("{} • Faction", f.name),
             format!(
-                "Power {}/{}\nBank {}\nMembers {}\nClaims {}\nRole {:?}",
+                "{}\nPower {}/{}\nBank {}\nMembers {}\nClaims {}\nRole {:?}",
+                if f.description.is_empty() {
+                    "No description set."
+                } else {
+                    &f.description
+                },
                 f.power,
                 f.max_power,
                 f.bank,

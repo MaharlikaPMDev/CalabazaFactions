@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1
+
+- Replaced the single-position arena command with a persistent Team 1/Team 2 block-tap setup wizard.
+- Enforced one global pending, preparing, or active war at a time.
+- Added `/faction info` and `/faction setinfo`; documented the existing home and kick commands.
+
 ## 0.2.0
 
 - Renamed the project and plugin to CalabazaFactions.

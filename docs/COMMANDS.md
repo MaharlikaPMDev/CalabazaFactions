@@ -13,6 +13,8 @@
 - `/faction kick <player>`
 - `/faction role <player> <officer|veteran|member|recruit>`
 - `/faction transfer <player>`
+- `/faction info [faction]`
+- `/faction setinfo <description>` — set up to 160 characters.
 - `/faction public` or `/faction private`
 
 Leaders control ownership, transfers, and roles. Leaders and officers manage invitations, applications, claims, diplomacy, prisons, homes, and the bank.
@@ -38,9 +40,11 @@ Leaders control ownership, transfers, and roles. Leaders and officers manage inv
 - `/faction waraccept` or `/faction wardecline`
 - `/faction ready` — the first leader shortens preparation to five minutes; both leaders ready starts immediately.
 - `/faction paypow <player>` — pay ransom from the faction bank.
-- `/faction setarena` — admin-only, sets the global set-piece arena.
+- `/faction setarena` — admin-only wizard: tap Team 1's spawn block, then Team 2's spawn block.
 
 Attackers win by killing the defending leader within 30 minutes. If time expires, defenders win. Leader death settles reparations from the loser's available faction bank. Members killed during active war become POWs of the killer's faction for up to 24 hours unless ransomed.
+
+Only one global war lifecycle may occupy the schedule. While any request is pending, a war is preparing, or a battle is active, all new consensual and forced declarations are rejected.
 
 ## Mail and trade
 
