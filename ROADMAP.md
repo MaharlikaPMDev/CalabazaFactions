@@ -72,6 +72,27 @@
 - [ ] Support strategic, player-directed expansion toward resources and rivals while keeping minimum enemy-core distance and anti-abuse corridor/tendril rules configurable rather than hard-coded.
 - [ ] Ensure destruction, replacement, migration, overclaiming, and rollback update both faction claim sets and the ownership index consistently, with startup validation capable of detecting and quarantining conflicting records.
 
+### Territory map and management interface
+
+- [ ] Add `/faction territory` as the dedicated territory viewing and management entry point; do not use the ambiguous `/faction manage` or `/faction map manage` names.
+- [ ] Provide an informational view to all eligible players and expose claim, overclaim, and release actions only to members whose configured rank grants territory permission.
+- [ ] On Java Edition, render nearby chunks as a centered inventory grid with navigation, refresh, legend, faction/core capacity, and status controls. Use a player head for the viewer's current chunk and preserve that chunk's ownership details in the item's name/lore.
+- [ ] Use consistent ownership markers: white for wilderness, blue for owned territory, cyan for allies, yellow for neutral factions, orange for enemies, green for safe zones, red for war zones, and black for unknown, unloaded, restricted, or out-of-border chunks.
+- [ ] On Bedrock Edition, use available Forms rather than depending on an unsupported inventory-shaped grid: present a compact nearby-territory preview, paginated actionable chunks with direction/coordinates/state, and a platform-native confirmation form.
+- [ ] Resolve a selected chunk to exactly one permitted action: claim eligible adjacent wilderness, overclaim an eligible enemy chunk, or release eligible owned territory. Server zones, core-protected chunks, unknown/unloaded chunks, and other non-actionable cells remain informational and never open a mutation prompt.
+- [ ] Show cost, capacity impact, adjacency, ownership, and important consequences before confirmation. Revalidate permissions, ownership, relation, funds, capacity, cardinal adjacency, connectivity, zones, borders, core state, and claim eligibility again at commit time because the displayed map is never authoritative.
+- [ ] Route UI actions through the same atomic domain operations as commands. Do not open nested inventory/Form screens directly from unsafe callbacks; use a callback-safe deferred path when Pumpkin supports it, or close the view and complete confirmation through a safe available interaction.
+- [ ] Keep the existing textual `/faction map` as a lightweight compatibility view unless deliberately folded into `/faction territory` with an alias and migration notice.
+- [ ] Defer custom Minecraft map-data rendering to a later enhancement. It may become an optional read-only navigation/strategy view after the Pumpkin API pin is upgraded and Java/Bedrock behavior is verified, but v0.4 territory management must not depend on map packets or clickable map pixels.
+
+### Chunk-aligned server zones
+
+- [ ] Make new safe-zone and war-zone selections chunk-aligned by resolving each tapped corner to its chunk and registering the inclusive rectangle of whole chunks, keeping server territory boundaries consistent with faction claims and the territory UI.
+- [ ] Preview the selected chunk bounds, selected-area count, optional buffer, and final protected chunk count before an administrator confirms zone creation.
+- [ ] Support configurable safe/war-zone buffer chunks so spawn protection can extend beyond the selected edge; buffers must be explicit and visible rather than silently expanding an administrator's selection.
+- [ ] Keep safe zones authoritative over war zones when they overlap, and make server-owned zones informational/non-actionable in `/faction territory`.
+- [ ] Preserve existing block-coordinate zones during migration. Provide previewed administrative conversion instead of silently expanding legacy zones to chunk boundaries and potentially capturing player builds.
+
 ### Cross-plugin faction events over IPC
 
 - [ ] Extend the existing host-backed IPC API into a versioned CalabazaFactions event service; do not depend on custom Pumpkin event registration because the public WASM event ABI exposes a fixed event set.
