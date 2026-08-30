@@ -1,16 +1,210 @@
 use crate::{
     app::{App, TradeView},
+    config::RankPermission,
     domain::*,
 };
 use pumpkin_plugin_api::{
-    ItemStack, Player, Screen, forms::SimpleFormBuilder, gui::Gui, text::TextComponent,
+    ItemStack, Player, Screen,
+    data_components::DataComponent,
+    forms::SimpleFormBuilder,
+    gui::Gui,
+    scoreboard::{BedrockDisplaySlot, BedrockSortOrder, DisplaySlot, RenderType},
+    text::TextComponent,
 };
+
+const DATA_COMPONENTS: &[DataComponent] = &[
+    DataComponent::CustomData,
+    DataComponent::MaxStackSize,
+    DataComponent::MaxDamage,
+    DataComponent::Damage,
+    DataComponent::Unbreakable,
+    DataComponent::UseEffects,
+    DataComponent::CustomName,
+    DataComponent::MinimumAttackCharge,
+    DataComponent::DamageType,
+    DataComponent::ItemName,
+    DataComponent::ItemModel,
+    DataComponent::Lore,
+    DataComponent::Rarity,
+    DataComponent::Enchantments,
+    DataComponent::CanPlaceOn,
+    DataComponent::CanBreak,
+    DataComponent::AttributeModifiers,
+    DataComponent::CustomModelData,
+    DataComponent::TooltipDisplay,
+    DataComponent::RepairCost,
+    DataComponent::CreativeSlotLock,
+    DataComponent::EnchantmentGlintOverride,
+    DataComponent::IntangibleProjectile,
+    DataComponent::Food,
+    DataComponent::Consumable,
+    DataComponent::UseRemainder,
+    DataComponent::UseCooldown,
+    DataComponent::DamageResistant,
+    DataComponent::Tool,
+    DataComponent::Weapon,
+    DataComponent::AttackRange,
+    DataComponent::Enchantable,
+    DataComponent::Equippable,
+    DataComponent::Repairable,
+    DataComponent::Glider,
+    DataComponent::TooltipStyle,
+    DataComponent::DeathProtection,
+    DataComponent::BlocksAttacks,
+    DataComponent::PiercingWeapon,
+    DataComponent::KineticWeapon,
+    DataComponent::SwingAnimation,
+    DataComponent::AdditionalTradeCost,
+    DataComponent::StoredEnchantments,
+    DataComponent::Dye,
+    DataComponent::DyedColor,
+    DataComponent::MapColor,
+    DataComponent::MapId,
+    DataComponent::MapDecorations,
+    DataComponent::MapPostProcessing,
+    DataComponent::ChargedProjectiles,
+    DataComponent::BundleContents,
+    DataComponent::PotionContents,
+    DataComponent::PotionDurationScale,
+    DataComponent::SuspiciousStewEffects,
+    DataComponent::WritableBookContent,
+    DataComponent::WrittenBookContent,
+    DataComponent::Trim,
+    DataComponent::DebugStickState,
+    DataComponent::EntityData,
+    DataComponent::BucketEntityData,
+    DataComponent::BlockEntityData,
+    DataComponent::Instrument,
+    DataComponent::ProvidesTrimMaterial,
+    DataComponent::OminousBottleAmplifier,
+    DataComponent::JukeboxPlayable,
+    DataComponent::ProvidesBannerPatterns,
+    DataComponent::Recipes,
+    DataComponent::LodestoneTracker,
+    DataComponent::FireworkExplosion,
+    DataComponent::Fireworks,
+    DataComponent::Profile,
+    DataComponent::NoteBlockSound,
+    DataComponent::BannerPatterns,
+    DataComponent::BaseColor,
+    DataComponent::PotDecorations,
+    DataComponent::Container,
+    DataComponent::BlockState,
+    DataComponent::Bees,
+    DataComponent::SulfurCubeContent,
+    DataComponent::Lock,
+    DataComponent::ContainerLoot,
+    DataComponent::BreakSound,
+    DataComponent::VillagerVariant,
+    DataComponent::WolfVariant,
+    DataComponent::WolfSoundVariant,
+    DataComponent::WolfCollar,
+    DataComponent::FoxVariant,
+    DataComponent::SalmonSize,
+    DataComponent::ParrotVariant,
+    DataComponent::TropicalFishPattern,
+    DataComponent::TropicalFishBaseColor,
+    DataComponent::TropicalFishPatternColor,
+    DataComponent::MooshroomVariant,
+    DataComponent::RabbitVariant,
+    DataComponent::PigVariant,
+    DataComponent::PigSoundVariant,
+    DataComponent::CowVariant,
+    DataComponent::CowSoundVariant,
+    DataComponent::ChickenVariant,
+    DataComponent::ChickenSoundVariant,
+    DataComponent::ZombieNautilusVariant,
+    DataComponent::FrogVariant,
+    DataComponent::HorseVariant,
+    DataComponent::PaintingVariant,
+    DataComponent::LlamaVariant,
+    DataComponent::AxolotlVariant,
+    DataComponent::CatVariant,
+    DataComponent::CatSoundVariant,
+    DataComponent::CatCollar,
+    DataComponent::SheepColor,
+    DataComponent::ShulkerColor,
+];
+
+pub fn serialize_item(stack: &ItemStack) -> TradeItem {
+    TradeItem {
+        registry_key: stack.get_registry_key(),
+        count: stack.get_count(),
+        components: stack
+            .get_components()
+            .into_iter()
+            .map(|component| TradeComponent {
+                id: component.component as u16,
+                value: component.value,
+            })
+            .collect(),
+    }
+}
+
+pub fn deserialize_item(item: &TradeItem) -> ItemStack {
+    let stack = ItemStack::new(&item.registry_key, item.count);
+    for component in &item.components {
+        if let Some(kind) = DATA_COMPONENTS.get(usize::from(component.id)).cloned() {
+            stack.set_component(kind, &component.value);
+        }
+    }
+    stack
+}
 
 fn item(id: &str, name: &str, lore: Vec<String>) -> ItemStack {
     let stack = ItemStack::new(id, 1);
     stack.set_custom_name(Some(TextComponent::text(name)));
     stack.set_lore(lore.into_iter().map(|v| TextComponent::text(&v)).collect());
     stack
+}
+
+fn localized(player: &Player, key: &str) -> TextComponent {
+    TextComponent::custom("calabazafactions", key, &player.get_locale(), Vec::new())
+}
+
+pub fn update_scoreboard(app: &App, player: &Player) {
+    let pid = App::player_id(player);
+    let state = app.state.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(faction) = state.faction_of(&pid) else {
+        return;
+    };
+    let (power, claims, bank) = (
+        faction
+            .power
+            .clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
+        i32::try_from(faction.claims.len()).unwrap_or(i32::MAX),
+        faction.bank.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
+    );
+    let first = app
+        .scoreboards
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(pid);
+    drop(state);
+
+    if let Some(bedrock) = player.as_bedrock() {
+        let board = bedrock.get_scoreboard();
+        if first {
+            board.add_objective("cfaction", "CalabazaFactions", BedrockSortOrder::Descending);
+            board.set_display_slot(BedrockDisplaySlot::Sidebar, "cfaction");
+        }
+        board.update_score("Power", "cfaction", power);
+        board.update_score("Claims", "cfaction", claims);
+        board.update_score("Bank", "cfaction", bank);
+    } else if let Some(java) = player.as_java() {
+        let board = java.get_scoreboard();
+        if first {
+            board.add_objective(
+                "cfaction",
+                localized(player, "scoreboard.title"),
+                RenderType::Integer,
+            );
+            board.set_display_slot(DisplaySlot::Sidebar, "cfaction");
+        }
+        board.update_score("Power", "cfaction", power);
+        board.update_score("Claims", "cfaction", claims);
+        board.update_score("Bank", "cfaction", bank);
+    }
 }
 
 pub fn open_faction(app: &App, player: &Player) {
@@ -43,10 +237,10 @@ pub fn open_faction(app: &App, player: &Player) {
     drop(s);
     if let Some(bedrock) = player.as_bedrock() {
         let form = SimpleFormBuilder::new(TextComponent::text(&title), TextComponent::text(&body))
-            .button(TextComponent::text("Faction Mail"), None)
-            .button(TextComponent::text("Claims / Map"), None)
-            .button(TextComponent::text("Diplomacy / Wars"), None)
-            .button(TextComponent::text("Trade Inbox"), None)
+            .button(localized(player, "ui.mail"), None)
+            .button(localized(player, "ui.claims"), None)
+            .button(localized(player, "ui.wars"), None)
+            .button(localized(player, "ui.trade"), None)
             .build();
         let id = bedrock.open_form(form);
         app.forms
@@ -154,6 +348,9 @@ pub fn open_mail(app: &App, player: &Player) {
 pub fn open_trade_send(app: &App, player: &Player, target: &str) -> Result<(), String> {
     let pid = App::player_id(player);
     let s = app.state.lock().unwrap_or_else(|e| e.into_inner());
+    if !app.rank_allows(&s, &pid, RankPermission::Trade) {
+        return Err("your faction rank cannot send trade deliveries".into());
+    }
     let mine = s
         .player_faction
         .get(&pid)
@@ -161,7 +358,12 @@ pub fn open_trade_send(app: &App, player: &Player, target: &str) -> Result<(), S
     if s.relation(mine, target) != Relation::Ally {
         return Err("trade requires a mutual alliance".into());
     }
-    if s.trade.get(target).map_or(0, Vec::len) + 27 > app.config.storage.trade_slots {
+    let capacity = s
+        .factions
+        .get(target)
+        .map(|faction| app.trade_capacity(faction))
+        .ok_or("target faction not found")?;
+    if s.trade.get(target).map_or(0, Vec::len) + 27 > capacity {
         return Err("recipient trade inbox has fewer than 27 free slots".into());
     }
     drop(s);
@@ -186,6 +388,9 @@ pub fn open_trade_send(app: &App, player: &Player, target: &str) -> Result<(), S
 pub fn open_trade_inbox(app: &App, player: &Player) -> Result<(), String> {
     let pid = App::player_id(player);
     let s = app.state.lock().unwrap_or_else(|e| e.into_inner());
+    if !app.rank_allows(&s, &pid, RankPermission::Trade) {
+        return Err("your faction rank cannot open the trade inbox".into());
+    }
     let fid = s
         .player_faction
         .get(&pid)
@@ -200,7 +405,7 @@ pub fn open_trade_inbox(app: &App, player: &Player) -> Result<(), String> {
     gui.set_allow_grab_items(true);
     gui.set_allow_put_items(false);
     for (slot, v) in items.iter().take(54).enumerate() {
-        gui.set_item(slot as u32, ItemStack::new(&v.registry_key, v.count));
+        gui.set_item(slot as u32, deserialize_item(v));
     }
     let inventory = gui.get_inventory();
     app.trades.lock().unwrap_or_else(|e| e.into_inner()).insert(

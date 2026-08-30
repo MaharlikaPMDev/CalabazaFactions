@@ -20,16 +20,18 @@
 
 ## v0.3 — Production hardening
 
-- [ ] Persist full item data components for trade mail, including enchantments, names, lore, and custom data.
-- [ ] Add configurable multi-arena selection and spawn groups per faction side.
-- [ ] Add explicit war shield/cooldown and post-war grace-period state.
-- [ ] Add safe-zone and war-zone administration independent of faction claims.
-- [ ] Add container, piston, explosion, fluid, and entity-grief protection coverage.
-- [ ] Add faction cores, upgrade trees, banners, and configurable rank permission matrices.
-- [ ] Add localized messages, scoreboards, richer map overlays, and GUI actions for every command.
+- [x] Persist full item data components for trade mail, including enchantments, names, lore, and custom data.
+- [x] Add configurable multi-arena selection and spawn groups per faction side.
+- [x] Add explicit war shield/cooldown and post-war grace-period state.
+- [x] Add safe-zone and war-zone administration independent of faction claims.
+- [x] Add container, piston, explosion, fluid, and entity-grief protection coverage.
+- [x] Add faction cores, upgrade trees, banners, and configurable rank permission matrices.
+- [x] Add localized UI messages, Java/Bedrock scoreboards, and richer relation/zone map overlays.
+- [ ] Add GUI actions for every command after Pumpkin exposes a callback-safe deferred GUI dispatch path. Menus remain informational to prevent #1 from recurring.
 - [ ] Add SQLite/Postgres adapters and multi-server coordination.
-- [ ] Add load tests, crash-recovery fixtures, and live Pumpkin integration tests.
-- [ ] Adopt a host-backed inter-plugin service API when Pumpkin exposes one.
+- [x] Add load tests and crash-recovery fixtures.
+- [ ] Add live Pumpkin integration tests to CI.
+- [x] Adopt Pumpkin's host-backed IPC API for versioned faction/relation lookups.
 
 ## Note for future session agents
 

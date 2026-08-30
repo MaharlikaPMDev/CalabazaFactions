@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -70,6 +70,83 @@ pub struct Claim {
     pub chunk_z: i32,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ZoneKind {
+    Safe,
+    War,
+}
+
+impl ZoneKind {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "safe" | "safe_zone" => Some(Self::Safe),
+            "war" | "war_zone" => Some(Self::War),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Zone {
+    pub id: String,
+    pub kind: ZoneKind,
+    pub world: String,
+    pub min_x: i32,
+    pub min_z: i32,
+    pub max_x: i32,
+    pub max_z: i32,
+}
+
+impl Zone {
+    pub fn contains(&self, world: &str, x: i32, z: i32) -> bool {
+        self.world == world
+            && (self.min_x..=self.max_x).contains(&x)
+            && (self.min_z..=self.max_z).contains(&z)
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct Arena {
+    pub id: String,
+    pub team1_spawns: Vec<Location>,
+    pub team2_spawns: Vec<Location>,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum UpgradeKind {
+    Power,
+    Territory,
+    Vault,
+    Shield,
+}
+
+impl UpgradeKind {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "power" => Some(Self::Power),
+            "territory" | "claims" => Some(Self::Territory),
+            "vault" | "storage" => Some(Self::Vault),
+            "shield" => Some(Self::Shield),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WarPolicyState {
+    pub shield_until: u64,
+    pub cooldown_until: u64,
+    pub grace_until: u64,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Faction {
     pub id: String,
@@ -84,6 +161,14 @@ pub struct Faction {
     pub bank: i64,
     pub prison: Option<Location>,
     pub home: Option<Location>,
+    #[serde(default)]
+    pub core: Option<Location>,
+    #[serde(default)]
+    pub banner: Option<TradeItem>,
+    #[serde(default)]
+    pub upgrades: HashMap<UpgradeKind, u8>,
+    #[serde(default)]
+    pub war_policy: WarPolicyState,
     pub created_at: u64,
 }
 
@@ -111,6 +196,15 @@ pub struct Mail {
 pub struct TradeItem {
     pub registry_key: String,
     pub count: u8,
+    #[serde(default)]
+    pub components: Vec<TradeComponent>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TradeComponent {
+    /// Stable index from Pumpkin's pinned `data-component` WIT enum.
+    pub id: u16,
+    pub value: Vec<u8>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Prisoner {
@@ -147,6 +241,8 @@ pub struct War {
     pub winner: Option<String>,
     pub loser: Option<String>,
     pub reparations: i64,
+    #[serde(default)]
+    pub arena_id: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -174,6 +270,12 @@ pub struct FactionState {
     pub arena: Option<Location>,
     #[serde(default)]
     pub arena_team2: Option<Location>,
+    #[serde(default)]
+    pub arenas: HashMap<String, Arena>,
+    #[serde(default)]
+    pub arena_cursor: usize,
+    #[serde(default)]
+    pub zones: HashMap<String, Zone>,
     pub audit: Vec<AuditEvent>,
 }
 impl Default for FactionState {
@@ -193,12 +295,38 @@ impl Default for FactionState {
             trade: HashMap::new(),
             arena: None,
             arena_team2: None,
+            arenas: HashMap::new(),
+            arena_cursor: 0,
+            zones: HashMap::new(),
             audit: vec![],
         }
     }
 }
 
+impl Faction {
+    pub fn upgrade_level(&self, kind: UpgradeKind) -> u8 {
+        self.upgrades.get(&kind).copied().unwrap_or(0)
+    }
+}
+
 impl FactionState {
+    pub fn migrate(&mut self) {
+        if self.arenas.is_empty()
+            && let (Some(team1), Some(team2)) = (self.arena.take(), self.arena_team2.take())
+        {
+            self.arenas.insert(
+                "default".into(),
+                Arena {
+                    id: "default".into(),
+                    team1_spawns: vec![team1],
+                    team2_spawns: vec![team2],
+                    enabled: true,
+                },
+            );
+        }
+        self.schema_version = SCHEMA_VERSION;
+    }
+
     pub fn normalize(value: &str) -> String {
         value
             .trim()
@@ -273,6 +401,10 @@ impl FactionState {
                 bank: 0,
                 prison: None,
                 home: None,
+                core: None,
+                banner: None,
+                upgrades: HashMap::new(),
+                war_policy: WarPolicyState::default(),
                 created_at: now,
             },
         );
@@ -371,17 +503,35 @@ impl FactionState {
         Ok(())
     }
     pub fn claim(&mut self, id: &str, claim: Claim) -> Result<(), String> {
+        self.claim_with_bonus(id, claim, 0)
+    }
+
+    pub fn claim_with_bonus(
+        &mut self,
+        id: &str,
+        claim: Claim,
+        bonus_claims: usize,
+    ) -> Result<(), String> {
         if self.factions.values().any(|f| f.claims.contains(&claim)) {
             return Err("chunk is already claimed".into());
         }
         let f = self.factions.get_mut(id).ok_or("faction not found")?;
-        if f.claims.len() >= f.power.max(0) as usize {
+        if f.claims.len() >= f.power.max(0) as usize + bonus_claims {
             return Err("not enough faction power".into());
         }
         f.claims.insert(claim);
         Ok(())
     }
     pub fn overclaim(&mut self, attacker: &str, claim: Claim) -> Result<String, String> {
+        self.overclaim_with_bonus(attacker, claim, 0)
+    }
+
+    pub fn overclaim_with_bonus(
+        &mut self,
+        attacker: &str,
+        claim: Claim,
+        bonus_claims: usize,
+    ) -> Result<String, String> {
         let owner = self
             .claim_owner(&claim)
             .map(|f| f.id.clone())
@@ -396,7 +546,7 @@ impl FactionState {
             return Err("target faction is not overclaimed".into());
         }
         let attacking = self.factions.get(attacker).ok_or("faction not found")?;
-        if attacking.claims.len() >= attacking.power.max(0) as usize {
+        if attacking.claims.len() >= attacking.power.max(0) as usize + bonus_claims {
             return Err("your faction lacks power for another claim".into());
         }
         self.factions.get_mut(&owner).unwrap().claims.remove(&claim);
@@ -439,6 +589,115 @@ impl FactionState {
                 WarStatus::Requested | WarStatus::Preparing | WarStatus::Active
             )
         })
+    }
+
+    pub fn zone_at(&self, world: &str, x: i32, z: i32) -> Option<&Zone> {
+        self.zones
+            .values()
+            .filter(|zone| zone.contains(world, x, z))
+            .max_by_key(|zone| matches!(zone.kind, ZoneKind::Safe))
+    }
+
+    pub fn environmental_protected(&self, world: Option<&str>, x: i32, z: i32) -> bool {
+        if let Some(world) = world {
+            if let Some(zone) = self.zone_at(world, x, z) {
+                return zone.kind == ZoneKind::Safe;
+            }
+            let claim = Claim {
+                world: world.into(),
+                chunk_x: x.div_euclid(16),
+                chunk_z: z.div_euclid(16),
+            };
+            return self.claim_owner(&claim).is_some();
+        }
+
+        let chunk_x = x.div_euclid(16);
+        let chunk_z = z.div_euclid(16);
+        self.zones
+            .values()
+            .any(|zone| zone.kind == ZoneKind::Safe && zone.contains(&zone.world, x, z))
+            || self.factions.values().any(|faction| {
+                faction
+                    .claims
+                    .iter()
+                    .any(|claim| claim.chunk_x == chunk_x && claim.chunk_z == chunk_z)
+            })
+    }
+
+    pub fn usable_arena_ids(&self) -> Vec<String> {
+        let mut ids = self
+            .arenas
+            .iter()
+            .filter(|(_, arena)| {
+                arena.enabled && !arena.team1_spawns.is_empty() && !arena.team2_spawns.is_empty()
+            })
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>();
+        ids.sort();
+        ids
+    }
+
+    pub fn select_arena(&mut self) -> Result<String, String> {
+        let ids = self.usable_arena_ids();
+        if ids.is_empty() {
+            return Err("an admin must configure an arena with spawn groups first".into());
+        }
+        let id = ids[self.arena_cursor % ids.len()].clone();
+        self.arena_cursor = self.arena_cursor.wrapping_add(1);
+        Ok(id)
+    }
+
+    pub fn war_block_reason(&self, attacker: &str, defender: &str, now: u64) -> Option<String> {
+        let attacker = self.factions.get(attacker)?;
+        let defender = self.factions.get(defender)?;
+        if attacker.war_policy.shield_until > now {
+            return Some("your faction must lower or wait out its active war shield".into());
+        }
+        if attacker.war_policy.cooldown_until > now {
+            return Some("your faction is still on war cooldown".into());
+        }
+        if attacker.war_policy.grace_until > now {
+            return Some("your faction is still in its post-war grace period".into());
+        }
+        if defender.war_policy.shield_until > now {
+            return Some("the target faction has an active war shield".into());
+        }
+        if defender.war_policy.cooldown_until > now {
+            return Some("the target faction is still on war cooldown".into());
+        }
+        if defender.war_policy.grace_until > now {
+            return Some("the target faction is still in its post-war grace period".into());
+        }
+        None
+    }
+
+    pub fn set_zone(
+        &mut self,
+        id: &str,
+        kind: ZoneKind,
+        first: &Location,
+        second: &Location,
+    ) -> Result<(), String> {
+        if first.world != second.world {
+            return Err("both zone corners must be in the same world".into());
+        }
+        let id = Self::normalize(id);
+        if id.is_empty() {
+            return Err("zone name must contain a letter or number".into());
+        }
+        self.zones.insert(
+            id.clone(),
+            Zone {
+                id,
+                kind,
+                world: first.world.clone(),
+                min_x: first.x.floor().min(second.x.floor()) as i32,
+                min_z: first.z.floor().min(second.z.floor()) as i32,
+                max_x: first.x.floor().max(second.x.floor()) as i32,
+                max_z: first.z.floor().max(second.z.floor()) as i32,
+            },
+        );
+        Ok(())
     }
 }
 
@@ -551,11 +810,172 @@ mod tests {
             winner: None,
             loser: None,
             reparations: 0,
+            arena_id: "default".into(),
         };
         s.wars.insert("war".into(), war.clone());
         assert!(s.war_slot_busy());
         war.status = WarStatus::Finished;
         s.wars.insert("war".into(), war);
         assert!(!s.war_slot_busy());
+    }
+
+    #[test]
+    fn legacy_arena_migrates_to_named_spawn_groups() {
+        let mut state = FactionState {
+            schema_version: 2,
+            arena: Some(Location {
+                world: "world".into(),
+                x: 1.0,
+                y: 2.0,
+                z: 3.0,
+            }),
+            arena_team2: Some(Location {
+                world: "world".into(),
+                x: 4.0,
+                y: 5.0,
+                z: 6.0,
+            }),
+            ..Default::default()
+        };
+        state.migrate();
+        assert_eq!(state.schema_version, SCHEMA_VERSION);
+        assert_eq!(state.arenas["default"].team1_spawns.len(), 1);
+        assert_eq!(state.arenas["default"].team2_spawns.len(), 1);
+    }
+
+    #[test]
+    fn arenas_rotate_deterministically() {
+        let mut state = FactionState::default();
+        let location = Location {
+            world: "world".into(),
+            x: 0.0,
+            y: 64.0,
+            z: 0.0,
+        };
+        for id in ["bravo", "alpha"] {
+            state.arenas.insert(
+                id.into(),
+                Arena {
+                    id: id.into(),
+                    team1_spawns: vec![location.clone()],
+                    team2_spawns: vec![location.clone()],
+                    enabled: true,
+                },
+            );
+        }
+        assert_eq!(state.select_arena().unwrap(), "alpha");
+        assert_eq!(state.select_arena().unwrap(), "bravo");
+        assert_eq!(state.select_arena().unwrap(), "alpha");
+    }
+
+    #[test]
+    fn safe_zone_takes_precedence_over_overlapping_war_zone() {
+        let mut state = FactionState::default();
+        let first = Location {
+            world: "world".into(),
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        let second = Location {
+            world: "world".into(),
+            x: 20.0,
+            y: 0.0,
+            z: 20.0,
+        };
+        state
+            .set_zone("war", ZoneKind::War, &first, &second)
+            .unwrap();
+        state
+            .set_zone("safe", ZoneKind::Safe, &first, &second)
+            .unwrap();
+        assert_eq!(state.zone_at("world", 10, 10).unwrap().kind, ZoneKind::Safe);
+        assert!(state.environmental_protected(Some("world"), 10, 10));
+    }
+
+    #[test]
+    fn war_policy_reports_explicit_shield_and_grace_reasons() {
+        let mut state = FactionState::default();
+        state
+            .create("Alpha", "a", Visibility::Public, 1, 10)
+            .unwrap();
+        state
+            .create("Bravo", "b", Visibility::Public, 1, 10)
+            .unwrap();
+        state
+            .factions
+            .get_mut("bravo")
+            .unwrap()
+            .war_policy
+            .shield_until = 100;
+        assert!(
+            state
+                .war_block_reason("alpha", "bravo", 50)
+                .unwrap()
+                .contains("shield")
+        );
+        state
+            .factions
+            .get_mut("bravo")
+            .unwrap()
+            .war_policy
+            .shield_until = 0;
+        state
+            .factions
+            .get_mut("bravo")
+            .unwrap()
+            .war_policy
+            .grace_until = 100;
+        assert!(
+            state
+                .war_block_reason("alpha", "bravo", 50)
+                .unwrap()
+                .contains("grace")
+        );
+    }
+
+    #[test]
+    fn trade_components_survive_json_round_trip() {
+        let item = TradeItem {
+            registry_key: "minecraft:diamond_sword".into(),
+            count: 1,
+            components: vec![TradeComponent {
+                id: 13,
+                value: vec![1, 2, 3, 4],
+            }],
+        };
+        let json = serde_json::to_string(&item).unwrap();
+        let restored: TradeItem = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.components, item.components);
+    }
+
+    #[test]
+    fn claim_lookup_load_fixture_covers_ten_thousand_claims() {
+        let mut state = FactionState::default();
+        for faction_index in 0..100 {
+            let name = format!("f{faction_index:03}");
+            let leader = format!("p{faction_index:03}");
+            let id = state
+                .create(&name, &leader, Visibility::Public, 1, 10_000)
+                .unwrap();
+            let faction = state.factions.get_mut(&id).unwrap();
+            for claim_index in 0..100 {
+                faction.claims.insert(Claim {
+                    world: "world".into(),
+                    chunk_x: faction_index * 100 + claim_index,
+                    chunk_z: faction_index,
+                });
+            }
+        }
+        for faction_index in 0..100 {
+            for claim_index in 0..100 {
+                let claim = Claim {
+                    world: "world".into(),
+                    chunk_x: faction_index * 100 + claim_index,
+                    chunk_z: faction_index,
+                };
+                assert!(state.claim_owner(&claim).is_some());
+            }
+        }
     }
 }

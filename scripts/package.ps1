@@ -1,7 +1,7 @@
-param([string]$Version = "0.2.1")
+param([string]$Version = "0.3.0")
 $ErrorActionPreference = "Stop"
-$cargoPath = "C:\Users\Administrator\.cargo\bin\cargo.exe"
-& $cargoPath +stable-x86_64-pc-windows-gnu build --release --locked --target wasm32-wasip2
+$cargoPath = (Get-Command cargo -ErrorAction Stop).Source
+& $cargoPath build --release --locked --target wasm32-wasip2
 New-Item -ItemType Directory -Force -Path dist | Out-Null
 Copy-Item -LiteralPath target\wasm32-wasip2\release\calabaza_factions.wasm -Destination dist\CalabazaFactions.wasm -Force
 $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath dist\CalabazaFactions.wasm).Hash.ToLowerInvariant()

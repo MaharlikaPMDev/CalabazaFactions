@@ -6,7 +6,7 @@
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "player_faction": {
     "player-uuid": "faction_id"
   },
@@ -31,8 +31,34 @@ The public `domain` module exports `FactionState`, `Faction`, `Role`, `Relation`
 - `faction_name(player_uuid)`
 - `relation_between_players(first_uuid, second_uuid)`
 
-## WASM limitation
+## Host IPC contract
 
-Pumpkin API `0.1` does not provide a host-backed cross-plugin service registry. A separately compiled WASM plugin cannot safely borrow this plugin's in-memory Rust objects. Until the host adds that facility, integrations should use the versioned read model through an administrator-approved bridge or share this crate's domain types when compiled into a coordinated plugin.
+Pumpkin plugins can send UTF-8 JSON to the `CalabazaFactions` plugin ID. Responses are UTF-8 JSON and currently use IPC contract version 1.
+
+Faction lookup:
+
+```json
+{"action":"faction","player":"player-uuid"}
+```
+
+```json
+{"version":1,"faction_id":"faction_id","faction_name":"Faction Name"}
+```
+
+Relation lookup:
+
+```json
+{"action":"relation","first":"first-player-uuid","second":"second-player-uuid"}
+```
+
+```json
+{"version":1,"relation":"ally"}
+```
+
+Unknown players return `null` faction fields and `neutral` relations. Consumers must ignore unknown response fields so the contract can grow compatibly.
+
+## External-process boundary
+
+IPC is same-host and same-server. External services and older Pumpkin hosts should consume `api.json`; multi-server database coordination remains roadmap work.
 
 Do not read `state.json`; its full schema is private and may migrate independently.

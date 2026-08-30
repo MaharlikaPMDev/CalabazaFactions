@@ -14,7 +14,7 @@ Classic Factions systems commonly combine chunk claims, faction/member power, ov
 
 ## Proposed domain entities
 
-`Faction`, `MemberRole`, `Claim`, `Relation`, `PowerLedger`, `Raid`, `Shield`, `Core`, `BankAccount`, `AuditEvent`.
+`Faction`, `Role`, `Claim`, `Relation`, `War`, `WarPolicyState`, `Arena`, `Zone`, `UpgradeKind`, `TradeItem`, and `AuditEvent`.
 
 ## Open decisions
 
@@ -22,3 +22,12 @@ Classic Factions systems commonly combine chunk claims, faction/member power, ov
 - Whether raid destruction is temporary, repairable, or permanent.
 - How offline members contribute power and how inactivity decay works.
 - Which Pumpkin block/entity events and packet APIs are stable enough for enforcement.
+
+## v0.3 decisions
+
+- Named arenas rotate in deterministic sorted order and distribute online members across each side's spawn group.
+- Safe zones override war zones when administrators overlap them. War zones override faction claim build/PvP policy.
+- Rank permissions are configuration, while leadership ownership operations remain leader-only invariants.
+- Item mail stores the pinned Pumpkin data-component enum index and opaque serialized bytes, allowing exact component restoration without interpreting component payloads.
+- Same-server integrations use versioned host IPC; `api.json` remains the stable external snapshot.
+- Nested GUI opens are forbidden from inventory/form response callbacks because the pinned host can re-enter its runtime there.

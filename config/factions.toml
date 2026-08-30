@@ -16,8 +16,55 @@ preparation_hours = 12
 ready_countdown_minutes = 5
 battle_minutes = 30
 prisoner_hours = 24
+shield_hours = 8
+cooldown_hours = 24
+post_war_grace_hours = 12
 
 [storage]
 max_audit_events = 5000
 max_mail_per_faction = 200
 trade_slots = 54
+backend = "json"
+
+[protection]
+containers = true
+pistons = true
+explosions = true
+fluids = true
+entity_grief = true
+
+[cores]
+max_upgrade_level = 5
+base_upgrade_cost = 2500
+power_per_level = 5
+claims_per_level = 2
+trade_slots_per_level = 9
+shield_hours_per_level = 1
+
+[ranks.leader]
+members = true
+territory = true
+economy = true
+diplomacy = true
+war = true
+home = true
+trade = true
+core = true
+
+[ranks.officer]
+members = true
+territory = true
+economy = true
+diplomacy = true
+war = true
+home = true
+trade = true
+core = true
+
+[ranks.veteran]
+trade = true
+
+[ranks.member]
+trade = true
+
+[ranks.recruit]
