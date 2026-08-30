@@ -72,6 +72,18 @@
 - [ ] Support strategic, player-directed expansion toward resources and rivals while keeping minimum enemy-core distance and anti-abuse corridor/tendril rules configurable rather than hard-coded.
 - [ ] Ensure destruction, replacement, migration, overclaiming, and rollback update both faction claim sets and the ownership index consistently, with startup validation capable of detecting and quarantining conflicting records.
 
+### Cross-plugin faction events over IPC
+
+- [ ] Extend the existing host-backed IPC API into a versioned CalabazaFactions event service; do not depend on custom Pumpkin event registration because the public WASM event ABI exposes a fixed event set.
+- [ ] Allow other plugins to subscribe and unsubscribe by their host-provided plugin ID, selecting explicit topics such as `faction.created`, `faction.disbanded`, `core.established`, `core.attacked`, `core.destroyed`, `core.restored`, `raid.started`, `raid.ended`, `territory.claimed`, `territory.unclaimed`, `war.declared`, `war.started`, and `war.ended`.
+- [ ] Publish a stable JSON envelope containing a schema identifier, schema version, monotonically increasing sequence number, event type, timestamp, and typed event data. Prefer stable faction/player UUIDs and include names only as display metadata.
+- [ ] Record an event only after its authoritative domain transition commits. Event creation, subscription delivery, retries, and restart recovery must be idempotent and must never repeat gameplay transitions.
+- [ ] Keep blocking gameplay callbacks short: append/enqueue the event and return without waiting for subscribers to perform Discord, HTTP, database, or other external I/O.
+- [ ] Isolate subscriber failures. An unavailable, slow, reloading, or malformed listener must not fail faction operations, deduct extra core lives, block the server tick, or prevent delivery to other subscribers.
+- [ ] Maintain a bounded persistent event journal with configurable age/count retention and an `events_since(sequence, topics)` IPC action so listeners can recover notifications missed during reloads, downtime, load-order races, or transient delivery failure.
+- [ ] Treat live IPC delivery as a low-latency notification and the journal/cursor as the recovery authority. Define explicit responses for subscribe, unsubscribe, cursor gaps, unsupported schema versions, unknown topics, and retention-expired sequences.
+- [ ] Document the IPC event schema and compatibility policy for third-party listener plugins while preserving the existing versioned faction/relation lookup actions.
+
 ## Note for future session agents
 
 `src/domain.rs` is the server-authoritative contract. Preserve atomic transitions, UUID-based identity, the `FactionLookup` trait, and `api.json` schema compatibility. Never use `block_on`, nested Tokio runtimes, or Pumpkin's scheduler from ticker/runtime callbacks. A v0.4 reconciliation scheduler may be introduced only as the bounded repair mechanism specified above; it must never become the authority for combat damage or destructive faction transitions. Timed war and POW transitions remain processed from commands and player events unless deliberately redesigned. Any new inventory persistence must round-trip every item component before the current registry-key/count limitation is removed from the README.
