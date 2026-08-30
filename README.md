@@ -2,7 +2,7 @@
 
 CalabazaFactions is a hardcore factions and guild-warfare plugin for [PumpkinMC](https://github.com/Pumpkin-MC/Pumpkin). It is written in Rust and distributed as a WASI Preview 2 WebAssembly component.
 
-The current release is **v0.3.0**. Features under **Planned for v0.4** are design commitments in the roadmap and are not available in the release yet.
+The current release is **v0.3.1**. Features under **Planned for v0.4** are design commitments in the roadmap and are not available in the release yet.
 
 ## What is implemented in v0.3
 
@@ -59,7 +59,7 @@ The current release is **v0.3.0**. Features under **Planned for v0.4** are desig
 4. Start or restart the server.
 5. CalabazaFactions creates its configuration and state under `plugins/data/CalabazaFactions/`.
 
-The v0.3.0 artifact targets the Pumpkin API commit pinned in `Cargo.toml` and Minecraft Java 26.2-era Pumpkin builds. Pumpkin is under active development, so use the pinned-compatible server build when possible.
+The v0.3.1 artifact targets Pumpkin commit `e393751b8d441fda01710f242f6e4c610ea3c193`, pinned in `Cargo.toml`, and Minecraft Java 26.2-era Pumpkin builds. Pumpkin is under active development, so use the pinned-compatible server build when possible.
 
 ## Server setup guide
 
@@ -180,7 +180,7 @@ If startup rejects the primary state, preserve all recovery files and inspect se
 
 ## Planned for v0.4
 
-v0.4 will center faction progression and territory around a physical beacon core. These features are **not implemented in v0.3.0**.
+v0.4 will center faction progression and territory around a physical beacon core. These features are **not implemented in v0.3.1**.
 
 ### Physical beacon cores
 

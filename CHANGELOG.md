@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.1
+
+- Rebuilt against Pumpkin commit `e393751b8d441fda01710f242f6e4c610ea3c193` to restore WASM plugin ABI compatibility after Pumpkin's event and command API update.
+
 ## 0.3.0
 
 - Added lossless trade item persistence for every Pumpkin data component, including names, lore, enchantments, container contents, and custom data.
