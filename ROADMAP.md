@@ -82,7 +82,6 @@
 - [ ] Resolve a selected chunk to exactly one permitted action: claim eligible adjacent wilderness, overclaim an eligible enemy chunk, or release eligible owned territory. Server zones, core-protected chunks, unknown/unloaded chunks, and other non-actionable cells remain informational and never open a mutation prompt.
 - [ ] Show cost, capacity impact, adjacency, ownership, and important consequences before confirmation. Revalidate permissions, ownership, relation, funds, capacity, cardinal adjacency, connectivity, zones, borders, core state, and claim eligibility again at commit time because the displayed map is never authoritative.
 - [ ] Route UI actions through the same atomic domain operations as commands. Do not open nested inventory/Form screens directly from unsafe callbacks; use a callback-safe deferred path when Pumpkin supports it, or close the view and complete confirmation through a safe available interaction.
-- [ ] Keep the existing textual `/faction map` as a lightweight compatibility view unless deliberately folded into `/faction territory` with an alias and migration notice.
 - [ ] Defer custom Minecraft map-data rendering to a later enhancement. It may become an optional read-only navigation/strategy view after the Pumpkin API pin is upgraded and Java/Bedrock behavior is verified, but v0.4 territory management must not depend on map packets or clickable map pixels.
 
 ### Chunk-aligned server zones
