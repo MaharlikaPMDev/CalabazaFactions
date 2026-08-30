@@ -74,7 +74,7 @@
 
 ### Territory map and management interface
 
-- [ ] Add `/faction territory` as the dedicated territory viewing and management entry point; do not use the ambiguous `/faction manage` or `/faction map manage` names.
+- [ ] Add `/faction map` as the dedicated territory viewing and `/faction territory` as dedicated territory management entry point.
 - [ ] Provide an informational view to all eligible players and expose claim, overclaim, and release actions only to members whose configured rank grants territory permission.
 - [ ] On Java Edition, render nearby chunks as a centered inventory grid with navigation, refresh, legend, faction/core capacity, and status controls. Use a player head for the viewer's current chunk and preserve that chunk's ownership details in the item's name/lore.
 - [ ] Use consistent ownership markers: white for wilderness, blue for owned territory, cyan for allies, yellow for neutral factions, orange for enemies, green for safe zones, red for war zones, and black for unknown, unloaded, restricted, or out-of-border chunks.
