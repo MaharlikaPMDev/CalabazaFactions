@@ -1,235 +1,162 @@
 # CalabazaFactions
 
-CalabazaFactions is a hardcore factions and guild-warfare plugin for [PumpkinMC](https://github.com/Pumpkin-MC/Pumpkin). It is written in Rust and distributed as a WASI Preview 2 WebAssembly component.
+CalabazaFactions is a hardcore factions and guild-warfare plugin for [PumpkinMC](https://github.com/Pumpkin-MC/Pumpkin), written in Rust and distributed as a WASI Preview 2 WebAssembly component.
 
-The current release is **v0.3.1**. Features under **Planned for v0.4** are design commitments in the roadmap and are not available in the release yet.
+The current release is **v0.4.0**. It targets Pumpkin commit `20c51d346e33f1f485f401b6d159a9f0881ec1af` and the current v0.1 plugin ABI.
 
-## What is implemented in v0.3
+## Highlights
 
-### Factions and membership
-
-- Public and invitation-only factions, applications, invitations, joining, leaving, kicking, leadership transfer, and disbanding.
-- Leader, officer, veteran, member, and recruit roles.
-- Configurable per-rank permissions for membership, territory, economy, diplomacy, war, homes, trade, and cores.
-- Public faction information and editable descriptions.
-- Persistent faction mail for applications, invitations, diplomacy, and war notices.
-
-### Economy, power, and territory
-
-- Player wallets and faction banks.
-- Member-based power, death power loss, claim limits, protected chunk claims, unclaiming, and enemy overclaims.
-- Faction homes and a relation/zone-aware territory map.
-- Logical faction core locations with power, territory, vault, and shield upgrade trees.
-- Component-safe faction banners copied from the leader's held item.
-
-> In v0.3, `/faction setcore` saves the faction's central location for upgrades and faction identity. It does **not** place or protect a physical beacon. Physical beacon cores are planned for v0.4.
-
-### Diplomacy, wars, and prisoners
-
-- Neutral, truce, ally, and enemy relations with friendly-fire protection.
-- Consensual war requests lasting up to 72 hours and immediate forced declarations.
-- Configurable preparation, leader readiness, accelerated countdowns, and 30-minute arena battles.
-- Named multi-arena rotation with multiple spawn positions for each faction side.
-- War shields, declaration cooldowns, and post-war grace periods.
-- POW capture during active wars, faction-bank ransom, configurable imprisonment, and prison-boundary enforcement.
-- Reparations calculated from base cost, power difference, and troop count.
-- One global pending, preparing, or active war lifecycle at a time.
-
-### Trade, protection, and UI
-
-- Alliance-only inventory trade with capacity checks and lossless persistence of Pumpkin item components, including names, lore, enchantments, custom data, and container contents.
-- Independent safe zones and war zones.
-- Claim/zone protection for building, containers, hoppers, pistons, explosions, fluids, buckets, and entity block grief.
-- Localized English and Filipino messages.
-- Java inventory pages, Bedrock Forms, faction sidebars, and map overlays.
-- Informational menus that avoid unsafe nested GUI callbacks; actions shown in menus are performed through commands.
-
-### Persistence and integrations
-
-- Atomic JSON state writes, rolling backup recovery, corrupt-file preservation, bounded mail/audit history, and crash-recovery fixtures.
-- A stable public `api.json` snapshot for external readers.
-- Versioned same-server Pumpkin IPC lookups for player factions and relations.
-- Event-driven war and POW timers without repeating schedulers or nested Tokio runtimes.
+- Physical beacon cores with clearance, lives, upgrades, hit cooldowns, destruction, replacement cooldowns, and safe reconciliation.
+- Strategic chunk territory: a 3x3 starting claim followed by individually selected, cardinal-adjacent chunks.
+- Java inventory and Bedrock Forms territory maps with separate viewing and management commands.
+- Public/private factions, configurable ranks, recruitment, faction mail, banks, homes, banners, diplomacy, arenas, wars, POWs, ransom, and reparations.
+- Safe/war zones, claim protection, alliance trade, localization, scoreboards, atomic persistence, and versioned IPC integrations.
+- Standalone player balances or an external economy owned by the future `CalabazaBank` plugin.
 
 ## Installation
 
-1. Download `CalabazaFactions.wasm` and its checksum from the [latest release](https://github.com/MaharlikaPMDev/CalabazaFactions/releases/latest).
-2. Optionally verify the artifact against `CalabazaFactions.wasm.sha256`.
-3. Place `CalabazaFactions.wasm` in Pumpkin's `plugins` directory.
-4. Start or restart the server.
-5. CalabazaFactions creates its configuration and state under `plugins/data/CalabazaFactions/`.
+1. Download `CalabazaFactions.wasm` and `CalabazaFactions.wasm.sha256` from the [latest release](https://github.com/MaharlikaPMDev/CalabazaFactions/releases/latest).
+2. Optionally verify the checksum.
+3. Place the WASM file in Pumpkin's `plugins` directory.
+4. Start Pumpkin. Configuration and state are created under `plugins/data/CalabazaFactions/`.
 
-The v0.3.1 artifact targets Pumpkin commit `e393751b8d441fda01710f242f6e4c610ea3c193`, pinned in `Cargo.toml`, and Minecraft Java 26.2-era Pumpkin builds. Pumpkin is under active development, so use the pinned-compatible server build when possible.
+Pumpkin's WASM ABI is evolving. v0.4.0 is pinned to the commit above so the exported `handle-event` signature matches the server API used to build the artifact.
 
-## Server setup guide
+## First server setup
 
-### 1. Review configuration
+Review `plugins/data/CalabazaFactions/config.toml` after first startup. The bundled defaults are in [`config/factions.toml`](config/factions.toml).
 
-After the first startup, review `plugins/data/CalabazaFactions/config.toml`. Important sections control:
+Important settings include:
 
-- Starting power, power per member, death loss, member limits, and claim rules.
-- Starting wallet, reparations, and POW ransom.
-- War request, preparation, battle, shield, cooldown, grace, and imprisonment durations.
-- Mail, trade, and audit retention limits.
-- Environmental claim protection.
-- Core upgrade costs and bonuses.
-- Permissions assigned to every faction rank.
+- `[cores]`: lives, claim capacity, clearance, hit/replacement cooldowns and cost, reconciliation batch size, enemy-core spacing, and an optional anti-corridor distance cap (`0` disables the cap).
+- `[territory_ui]`: maximum map pan distance, five chunks by default.
+- `[zones]`: explicit safe-zone and war-zone chunk buffers.
+- `[economy]`: `standalone` or `external`; the external provider defaults to `CalabazaBank`.
+- `[ipc]`: event journal retention and live-delivery interval.
+- `[ranks.*]`: membership, territory, economy, diplomacy, war, home, trade, and core permissions.
 
-Stop the server before editing generated state files. Treat `state.json` as private plugin data rather than a public integration format.
-
-### 2. Configure war arenas
-
-Run:
+Configure at least one complete war arena:
 
 ```text
 /faction setarena <name>
-```
-
-Tap the first Team 1 and Team 2 spawn blocks when prompted. Add more spawn positions with:
-
-```text
 /faction addarenaspawn <name> <1|2>
+/faction arenas
 ```
 
-Use `/faction arenas` to inspect configured arenas. Complete arenas rotate automatically between wars.
-
-### 3. Configure zones
-
-Create a safe or war zone with:
+Create server zones by selecting two corners and confirming the preview:
 
 ```text
 /faction setzone <name> <safe|war>
+/faction zoneconfirm
 ```
 
-Tap two opposite corners to complete the region. Safe zones take precedence if safe and war zones overlap.
+New zones cover whole chunks. The preview reports selected and buffered bounds; safe zones take precedence over overlapping war zones. Existing pre-v0.4 block-coordinate zones remain unchanged during migration.
 
-### 4. Prepare factions for war
-
-Each faction must establish a prison with `/faction setprison` before declaring or receiving a war. Faction leaders should also configure a home, logical core, banner, ranks, and diplomacy before entering combat.
+Use `/faction convertzone <legacy-zone>` to preview an explicit whole-chunk conversion without changing the old zone until `/faction zoneconfirm`.
 
 ## Player quick start
 
+Create a faction, then establish its most important structure:
+
 ```text
 /faction create <name> [public|private]
+/faction setcore
+```
+
+`/faction setcore` places a physical beacon at the player's block position after validating clearance, all nine loaded starting chunks, ownership, zones, world borders, and nearby faction cores. It then grants the centered 3x3 territory atomically.
+
+A new faction is `AwaitingCore`. Until its beacon is established it cannot invite, accept applications or invitations, use public joining, or expand. Pre-v0.4 factions keep their identity, members, economy, and history but migrate to this same state without silently placing blocks. Their old non-core claims are deactivated and retained in the recoverable claim snapshot before the new 3x3 is established.
+
+Continue setup with:
+
+```text
 /faction setinfo <description>
 /faction sethome
-/faction setcore
 /faction setprison
 /faction setbanner
-```
-
-Then recruit members, deposit funds, and claim territory:
-
-```text
-/faction invite <player>
 /faction bank deposit <amount>
-/faction claim
-/faction map
 ```
 
-Use `/faction help [1|2|3]` in game for categorized help. The complete command reference is in [`docs/COMMANDS.md`](docs/COMMANDS.md). Primary aliases are `/faction` and `/f`.
+Use `/faction help [1|2|3]` for colored, sectioned in-game help and [`docs/COMMANDS.md`](docs/COMMANDS.md) for the complete reference.
 
-## Gameplay overview
+## Physical core rules
 
-### Claims and overclaims
+A level-one core starts with 10 lives by default. Blocks cannot be placed in its configured clearance volume. Claim and environmental handlers protect the beacon; a bounded scheduler only repairs unexpectedly missing beacons in already loaded chunks and never deals damage.
 
-Stand inside a wilderness chunk and run `/faction claim`. Claim capacity is based on faction power and territory upgrades. Members with the configured territory permission can unclaim the current chunk.
+A valid enemy break attempt is cancelled and counts as one hit after the global core-hit cooldown. At zero lives:
 
-`/faction overclaim` can take an enemy chunk only when that faction owns more claims than its available power permits. Building and environmental actions in protected territory are checked against faction membership, relations, and zone rules.
+- the physical beacon is removed;
+- every owned chunk is revoked through the ownership index;
+- the faction becomes `Destroyed` and cannot recruit or expand;
+- faction identity, members, ranks, relations, history, bank, and a recoverable claim snapshot remain intact.
 
-### Relations and war
+After the configurable replacement cooldown, an authorized member can establish a replacement with `/faction setcore`.
 
-Use `/faction relation <faction> <neutral|truce|ally|enemy>` to manage diplomacy. `/faction war <faction>` sends a consensual request; `/faction forcewar <faction>` begins forced-war preparation when all restrictions pass.
+## Strategic territory and map
 
-During an arena battle, attackers win by killing the defending leader. Defenders win if the battle timer expires. Eligible deaths can create POWs, and the losing faction may owe reparations from its available bank.
+After the initial 3x3, each new chunk is selected separately. It must share a north, south, east, or west edge with existing territory; diagonal contact is insufficient. Capacity comes from core level. Loaded state, world border, zones, ownership, capacity, adjacency, core spacing, and connectivity are revalidated when a change commits.
 
-### Alliance trade
+- `/faction map` opens the read-only territory view.
+- `/faction territory` opens management for ranks with territory permission.
+- `/faction claim`, `/faction overclaim`, and `/faction unclaim` operate on the current chunk through the same domain rules.
 
-`/faction trade <allied faction>` opens a 27-slot outgoing shipment. `/faction tradeinbox` retrieves deliveries. The recipient must have sufficient mailbox capacity before a shipment is accepted.
-
-## Commands and permissions
-
-- `CalabazaFactions:command.faction` — standard player commands; allowed by default.
-- `CalabazaFactions:command.admin` — arena and zone administration; operator level 3 by default.
-
-Frequently used commands include:
-
-- Membership: `/faction invite`, `apply`, `join`, `accept`, `kick`, `role`, `transfer`, and `leave`.
-- Territory: `/faction claim`, `unclaim`, `overclaim`, `map`, `sethome`, `home`, `setcore`, and `core`.
-- Economy: `/faction bank`, `/faction upgrade`, `/faction shield`, and `/faction paypow`.
-- Diplomacy and combat: `/faction relation`, `war`, `forcewar`, `waraccept`, `wardecline`, and `ready`.
-- Administration: `/faction setarena`, `addarenaspawn`, `delarena`, `setzone`, and `delzone`.
-
-See [`docs/COMMANDS.md`](docs/COMMANDS.md) for syntax and behavior.
-
-## Public integration API
-
-The Rust domain exports `FactionLookup` for embedded consumers. Other Pumpkin plugins can send versioned JSON IPC requests to query a player's faction or the relation between two players. External processes and older Pumpkin hosts can read the atomically refreshed `api.json` snapshot.
-
-Use UUIDs as stable player identifiers and ignore unknown response fields for forward compatibility. Never integrate against `state.json`. See [`docs/API.md`](docs/API.md) for request and response examples.
-
-## Persistence and recovery
-
-- `state.json` — authoritative private state.
-- `state.json.bak` — previous successful state.
-- `state.json.corrupt` — rejected primary state preserved during backup recovery.
-- `api.json` — stable public read model.
-- Temporary files — used during atomic replacement and cleaned through the persistence lifecycle.
-
-If startup rejects the primary state, preserve all recovery files and inspect server logs before making manual changes.
-
-## Planned for v0.4
-
-v0.4 will center faction progression and territory around a physical beacon core. These features are **not implemented in v0.3.1**.
-
-### Physical beacon cores
-
-- `/faction setcore` will atomically validate clearance and conflicts, place a beacon, save its exact position, and establish territory.
-- Newly created factions will remain in `AwaitingCore`. Until the founder successfully establishes a core, the faction cannot invite or accept members, accept applications, use public joining, or expand territory.
-- A level-one core will begin with 10 configurable lives. Core levels will increase defensive strength and chunk capacity.
-- A valid enemy break attempt will count as one hit while the physical break is cancelled. Hit cooldowns will prevent tool speed or packet spam from consuming lives instantly.
-- At zero lives, the core and all faction claims will be removed without disbanding the faction. Its identity, members, ranks, relations, and history will remain.
-
-### Event-driven clearance and safe reconciliation
-
-- Block placement and other world-mutation events will prevent burying or modifying the protected core clearance area.
-- One bounded reconciliation scheduler will repair exceptional state only; it will not determine attacks or destructive gameplay outcomes.
-- Unloaded or unavailable chunks will be skipped without being forced to load. Ambiguous reads will be treated as unknown, never as core destruction.
-
-### Strategic chunk expansion
-
-- Establishing a core will grant a 3x3 territory centered on its chunk.
-- Further claims will be selected one chunk at a time rather than automatically expanding in every direction.
-- Every new chunk must share a north, south, east, or west edge with existing faction territory; diagonal contact will not qualify.
-- Core level will control total chunk capacity, while connectivity and conflict rules will prevent islands and invalid claims.
-
-### Cross-plugin event subscriptions
-
-- CalabazaFactions will extend its IPC API with subscriptions for faction, core, raid, territory, and war events.
-- Events will use stable versioned JSON envelopes, UUID identifiers, timestamps, topics, and monotonic sequence numbers.
-- A bounded persistent journal and `events_since` cursor API will let listener plugins recover notifications missed during reloads or downtime.
-- Subscriber and external-service failures will not block gameplay callbacks or roll back faction operations.
-
-The complete implementation invariants and compatibility requirements are in [`ROADMAP.md`](ROADMAP.md).
-
-## Known compatibility boundaries
-
-- v0.3 uses the atomic JSON storage adapter. SQLite/Postgres and multi-server coordination remain future work.
-- Java inventory and Bedrock form callbacks do not open nested screens. This avoids Pumpkin runtime re-entry associated with issue #1; use commands for actions displayed by informational menus.
-- Some environmental Pumpkin events in the pinned API omit a world identifier. For piston, explosion, hopper, flow, and entity-grief checks, CalabazaFactions conservatively protects matching claimed/safe-zone coordinates in any world.
-- Live Pumpkin integration tests are not yet part of CI.
-
-## Building from source
-
-Install the Rust targets/toolchains required by your platform, then run the equivalent of:
+Java uses a 9x5 pane map. The player head marks the viewer's current chunk while preserving ownership details. The fixed bottom row is:
 
 ```text
-cargo test --target x86_64-pc-windows-gnu --lib
+[ ↑ ][ ↓ ][ ← ][ → ][ BOOK ][   ][   ][   ][   ]
+```
+
+The arrows pan within the configured limit. The book contains faction/core capacity and this legend:
+
+- blue: owned territory
+- cyan: ally
+- yellow: neutral or truce
+- red: enemy
+- white: wilderness
+- lime: safe zone
+- red: war zone
+- black: unknown, unloaded, restricted, or outside the usable view
+
+Bedrock uses a native Form with the same 9x5 information, direction controls, and a compact list of actionable chunks. UI selections create a short-lived confirmation; commit-time validation remains authoritative. GUI callbacks never open nested screens directly, preserving the non-reentrant fix for issue #1.
+
+## Economy modes
+
+In `standalone` mode, CalabazaFactions maintains local player wallets and faction banks.
+
+In `external` mode, the global player balance belongs to another plugin. CalabazaFactions sends versioned debit, credit, balance, and health requests to the configured provider while retaining only its faction-specific bank. Deposits and withdrawals use transaction IDs and compensation paths so a failed second step does not silently lose funds.
+
+The future CalabazaBank wire contract is documented in [`docs/API.md`](docs/API.md). External mode can be configured before that plugin exists; startup warns that the provider is unavailable and economy operations fail safely.
+
+## Integrations and persistence
+
+Other Pumpkin plugins can query factions/relations and subscribe to faction, core, territory, war, and reserved raid topics over host IPC. Events use a stable schema, monotonic sequence numbers, bounded persistence, and `events_since` recovery. See [`docs/API.md`](docs/API.md).
+
+Files under the plugin data directory:
+
+- `state.json`: authoritative private state, schema 4
+- `state.json.bak`: previous successful state
+- `state.json.corrupt`: rejected primary preserved during recovery
+- `api.json`: stable public read model
+- `config.toml`: generated configuration
+
+Writes are atomic and preserve a rolling backup. Integrate through IPC or `api.json`, never through private `state.json`.
+
+## Building
+
+```text
+cargo test --lib
 cargo clippy --target wasm32-wasip2 --all-targets -- -D warnings
 cargo build --release --locked --target wasm32-wasip2
 ```
 
-The release component is written to `target/wasm32-wasip2/release/calabaza_factions.wasm`. The repository pins its Pumpkin API revision in `Cargo.toml` for reproducible compatibility.
+The artifact is `target/wasm32-wasip2/release/calabaza_factions.wasm`.
+
+## Known boundaries and upcoming work
+
+- JSON is the portable v0.4 storage backend. SQLite/Postgres and multi-server coordination remain later work.
+- Custom Minecraft map-data rendering is deferred; territory management does not depend on packets or clickable map pixels.
+- `raid.*` IPC topics are reserved for a future authoritative raid lifecycle; core and war attack events are available now.
+- Live server integration tests are not yet part of CI, so test a release artifact on a staging Pumpkin server before production rollout.
 
 ## License
 

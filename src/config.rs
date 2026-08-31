@@ -9,6 +9,9 @@ pub struct Config {
     pub storage: StorageConfig,
     pub protection: ProtectionConfig,
     pub cores: CoreConfig,
+    pub territory_ui: TerritoryUiConfig,
+    pub zones: ZoneConfig,
+    pub ipc: IpcConfig,
     pub ranks: RankConfig,
 }
 
@@ -25,9 +28,19 @@ pub struct FactionConfig {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct EconomyConfig {
+    pub mode: EconomyMode,
+    pub external_plugin: String,
     pub starting_wallet: i64,
     pub war_base_reparation: i64,
     pub pow_base_ransom: i64,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EconomyMode {
+    #[default]
+    Standalone,
+    External,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -72,6 +85,41 @@ pub struct CoreConfig {
     pub claims_per_level: usize,
     pub trade_slots_per_level: usize,
     pub shield_hours_per_level: u64,
+    pub starting_lives: u32,
+    pub lives_per_level: u32,
+    pub base_claim_capacity: usize,
+    pub clearance_radius: i32,
+    pub clearance_height: i32,
+    pub hit_cooldown_seconds: u64,
+    pub replacement_cooldown_seconds: u64,
+    pub replacement_cost: i64,
+    pub reconcile_interval_ticks: u64,
+    pub reconcile_batch_size: usize,
+    pub enemy_core_distance_chunks: i32,
+    /// Zero disables the anti-corridor distance cap.
+    pub max_claim_distance_from_core: i32,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TerritoryUiConfig {
+    pub max_pan_steps: i32,
+    pub refresh_cooldown_seconds: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ZoneConfig {
+    pub safe_buffer_chunks: i32,
+    pub war_buffer_chunks: i32,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct IpcConfig {
+    pub event_retention_count: usize,
+    pub event_retention_seconds: u64,
+    pub delivery_interval_ticks: u64,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -184,6 +232,8 @@ impl Default for FactionConfig {
 impl Default for EconomyConfig {
     fn default() -> Self {
         Self {
+            mode: EconomyMode::Standalone,
+            external_plugin: "CalabazaBank".into(),
             starting_wallet: 1000,
             war_base_reparation: 1000,
             pow_base_ransom: 250,
@@ -238,6 +288,46 @@ impl Default for CoreConfig {
             claims_per_level: 2,
             trade_slots_per_level: 9,
             shield_hours_per_level: 1,
+            starting_lives: 10,
+            lives_per_level: 5,
+            base_claim_capacity: 9,
+            clearance_radius: 2,
+            clearance_height: 5,
+            hit_cooldown_seconds: 3,
+            replacement_cooldown_seconds: 3600,
+            replacement_cost: 0,
+            reconcile_interval_ticks: 600,
+            reconcile_batch_size: 10,
+            enemy_core_distance_chunks: 2,
+            max_claim_distance_from_core: 0,
+        }
+    }
+}
+
+impl Default for TerritoryUiConfig {
+    fn default() -> Self {
+        Self {
+            max_pan_steps: 5,
+            refresh_cooldown_seconds: 2,
+        }
+    }
+}
+
+impl Default for ZoneConfig {
+    fn default() -> Self {
+        Self {
+            safe_buffer_chunks: 1,
+            war_buffer_chunks: 0,
+        }
+    }
+}
+
+impl Default for IpcConfig {
+    fn default() -> Self {
+        Self {
+            event_retention_count: 10_000,
+            event_retention_seconds: 604_800,
+            delivery_interval_ticks: 20,
         }
     }
 }

@@ -1,10 +1,14 @@
 mod app;
 mod config;
 pub mod domain;
+mod economy;
 mod storage;
 mod ui;
 
-use app::{App, ArenaSetup, TradeView, ZoneSetup};
+use app::{
+    App, ArenaSetup, PendingTerritoryAction, TerritoryFormAction, TerritoryView, TradeView,
+    ZoneSetup,
+};
 use config::RankPermission;
 use domain::*;
 use pumpkin_plugin_api::{
@@ -25,7 +29,9 @@ use pumpkin_plugin_api::{
     },
     permission::{Permission, PermissionDefault, PermissionLevel},
     permissions,
+    scheduler::SchedulerExt,
     text::TextComponent,
+    world::{BlockFlags, BlockPos},
 };
 use std::{collections::HashSet, path::PathBuf, sync::Arc};
 
@@ -40,7 +46,7 @@ impl Plugin for CalabazaFactions {
         Self { app: None }
     }
     fn metadata(&self) -> PluginMetadata {
-        PluginMetadata{name:"CalabazaFactions".into(),version:env!("CARGO_PKG_VERSION").into(),authors:vec!["MaharlikaPMDev".into()],description:"Playable factions, claims, diplomacy, wars, POWs, economy, mail, and alliance trade for PumpkinMC.".into(),dependencies:vec![],permissions:vec![permissions::FS_READ_DATA.into(),permissions::FS_WRITE_DATA.into()]}
+        PluginMetadata{name:"CalabazaFactions".into(),version:env!("CARGO_PKG_VERSION").into(),authors:vec!["MaharlikaPMDev".into()],description:"Physical-core factions, strategic chunk territory, diplomacy, wars, economy, mail, and alliance trade for PumpkinMC.".into(),dependencies:vec![],permissions:vec![permissions::FS_READ_DATA.into(),permissions::FS_WRITE_DATA.into()]}
     }
     fn on_load(&mut self, context: Context) -> pumpkin_plugin_api::Result<()> {
         pumpkin_plugin_api::i18n::load_translations(
@@ -88,25 +94,50 @@ impl Plugin for CalabazaFactions {
         context.register_event_handler(InventoryMove(app.clone()), EventPriority::High, true)?;
         context.register_event_handler(BucketEmpty(app.clone()), EventPriority::High, true)?;
         context.register_event_handler(BucketFill(app.clone()), EventPriority::High, true)?;
+
+        let reconcile_app = app.clone();
+        context.schedule_repeating_task(
+            app.config.cores.reconcile_interval_ticks.max(1),
+            app.config.cores.reconcile_interval_ticks.max(1),
+            move |server| reconcile_cores(&reconcile_app, &server),
+        );
+        let delivery_app = app.clone();
+        context.schedule_repeating_task(
+            app.config.ipc.delivery_interval_ticks.max(1),
+            app.config.ipc.delivery_interval_ticks.max(1),
+            move |_server| deliver_ipc_events(&delivery_app),
+        );
+        if config::EconomyMode::External == app.config.economy.mode
+            && let Err(error) = economy::health(&app.config.economy)
+        {
+            tracing::warn!("External economy is configured but not ready: {error}");
+        }
         tracing::info!(
-            "CalabazaFactions v{} loaded without a scheduler",
+            "CalabazaFactions v{} loaded with core reconciliation and IPC delivery",
             env!("CARGO_PKG_VERSION")
         );
         self.app = Some(app);
         Ok(())
     }
 
-    fn handle_ipc_message(&mut self, _sender: String, message: Vec<u8>) -> Result<Vec<u8>, String> {
+    fn handle_ipc_message(&mut self, sender: String, message: Vec<u8>) -> Result<Vec<u8>, String> {
         let app = self.app.as_ref().ok_or("plugin is not loaded")?;
         let request: serde_json::Value =
             serde_json::from_slice(&message).map_err(|e| format!("invalid request: {e}"))?;
+        if let Some(version) = request.get("version").and_then(serde_json::Value::as_u64)
+            && version != 1
+        {
+            return Err(format!(
+                "unsupported IPC schema version {version}; supported version is 1"
+            ));
+        }
         let action = request
             .get("action")
             .and_then(serde_json::Value::as_str)
             .ok_or("missing action")?;
-        let state = app.state.lock().unwrap_or_else(|e| e.into_inner());
         let response = match action {
             "faction" => {
+                let state = app.state.lock().unwrap_or_else(|e| e.into_inner());
                 let player = request
                     .get("player")
                     .and_then(serde_json::Value::as_str)
@@ -119,6 +150,7 @@ impl Plugin for CalabazaFactions {
                 })
             }
             "relation" => {
+                let state = app.state.lock().unwrap_or_else(|e| e.into_inner());
                 let first = request
                     .get("first")
                     .and_then(serde_json::Value::as_str)
@@ -132,12 +164,237 @@ impl Plugin for CalabazaFactions {
                     "relation": state.relation_between_players(first, second),
                 })
             }
+            "capabilities" => serde_json::json!({
+                "schema": "calabazafactions.ipc",
+                "version": 1,
+                "actions": ["capabilities", "faction", "relation", "subscribe", "unsubscribe", "events_since"],
+                "event_schema": "calabazafactions.event",
+                "topics": ["faction.*", "territory.*", "core.*", "war.*", "raid.*", "*"]
+            }),
+            "subscribe" => {
+                let topics = ipc_topics(&request)?;
+                app.ipc_subscribers
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .insert(sender.clone(), topics.clone());
+                serde_json::json!({
+                    "schema": "calabazafactions.ipc",
+                    "version": 1,
+                    "subscriber": sender,
+                    "topics": topics,
+                })
+            }
+            "unsubscribe" => {
+                let removed = app
+                    .ipc_subscribers
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .remove(&sender)
+                    .is_some();
+                serde_json::json!({"schema": "calabazafactions.ipc", "version": 1, "removed": removed})
+            }
+            "events_since" => {
+                let since = request
+                    .get("since")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0);
+                let topics = ipc_topics_optional(&request)?;
+                let state = app.state.lock().unwrap_or_else(|error| error.into_inner());
+                let oldest = state
+                    .events
+                    .first()
+                    .map_or(state.next_event_sequence, |event| event.sequence);
+                let latest = state.events.last().map_or(0, |event| event.sequence);
+                let events = state
+                    .events
+                    .iter()
+                    .filter(|event| {
+                        event.sequence > since && topic_matches(&topics, &event.event_type)
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
+                serde_json::json!({
+                    "schema": "calabazafactions.ipc",
+                    "version": 1,
+                    "oldest_sequence": oldest,
+                    "latest_sequence": latest,
+                    "gap": since > 0 && since.saturating_add(1) < oldest,
+                    "events": events,
+                })
+            }
             _ => return Err("unsupported action".into()),
         };
         serde_json::to_vec(&response).map_err(|e| e.to_string())
     }
 }
 pumpkin_plugin_api::register_plugin!(CalabazaFactions);
+
+fn ipc_topics(request: &serde_json::Value) -> Result<HashSet<String>, String> {
+    let topics = request
+        .get("topics")
+        .and_then(serde_json::Value::as_array)
+        .ok_or("missing topics")?;
+    let parsed = topics
+        .iter()
+        .map(|topic| {
+            topic
+                .as_str()
+                .map(str::to_owned)
+                .ok_or("topics must be strings")
+        })
+        .collect::<Result<HashSet<_>, _>>()?;
+    if parsed.is_empty() {
+        return Err("at least one topic is required".into());
+    }
+    const EXACT_TOPICS: &[&str] = &[
+        "faction.created",
+        "faction.disbanded",
+        "core.established",
+        "core.attacked",
+        "core.destroyed",
+        "core.restored",
+        "territory.claimed",
+        "territory.overclaimed",
+        "territory.unclaimed",
+        "war.declared",
+        "war.accepted",
+        "war.declined",
+        "war.started",
+        "war.ended",
+        "raid.started",
+        "raid.ended",
+    ];
+    const FAMILY_TOPICS: &[&str] = &["faction.*", "core.*", "territory.*", "war.*", "raid.*", "*"];
+    if let Some(unknown) = parsed.iter().find(|topic| {
+        !EXACT_TOPICS.contains(&topic.as_str()) && !FAMILY_TOPICS.contains(&topic.as_str())
+    }) {
+        return Err(format!("unknown IPC topic '{unknown}'"));
+    }
+    Ok(parsed)
+}
+
+fn ipc_topics_optional(request: &serde_json::Value) -> Result<HashSet<String>, String> {
+    if request.get("topics").is_none() {
+        return Ok(HashSet::from(["*".into()]));
+    }
+    ipc_topics(request)
+}
+
+fn topic_matches(topics: &HashSet<String>, event_type: &str) -> bool {
+    topics.iter().any(|topic| {
+        topic == "*"
+            || topic == event_type
+            || topic
+                .strip_suffix(".*")
+                .is_some_and(|prefix| event_type.starts_with(&format!("{prefix}.")))
+    })
+}
+
+fn deliver_ipc_events(app: &App) {
+    let subscribers = app
+        .ipc_subscribers
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone();
+    let mut delivered = app
+        .delivered_event_sequence
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let events = app
+        .state
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .events
+        .iter()
+        .filter(|event| event.sequence > *delivered)
+        .cloned()
+        .collect::<Vec<_>>();
+    for event in &events {
+        let payload = match serde_json::to_vec(event) {
+            Ok(payload) => payload,
+            Err(error) => {
+                tracing::warn!("Could not serialize IPC event {}: {error}", event.sequence);
+                continue;
+            }
+        };
+        for (plugin, topics) in &subscribers {
+            if topic_matches(topics, &event.event_type)
+                && let Err(error) = pumpkin_plugin_api::ipc::send_ipc_message(plugin, &payload)
+            {
+                tracing::warn!(
+                    "IPC event {} delivery to {plugin} failed: {error:?}",
+                    event.sequence
+                );
+            }
+        }
+        *delivered = event.sequence;
+    }
+}
+
+fn reconcile_cores(app: &App, server: &Server) {
+    let cores = {
+        let state = app.state.lock().unwrap_or_else(|error| error.into_inner());
+        let mut cores = state
+            .factions
+            .iter()
+            .filter_map(|(id, faction)| {
+                faction
+                    .has_active_core()
+                    .then(|| faction.physical_core.clone())
+                    .flatten()
+                    .map(|core| (id.clone(), core))
+            })
+            .collect::<Vec<_>>();
+        cores.sort_by(|left, right| left.0.cmp(&right.0));
+        cores
+    };
+    if cores.is_empty() {
+        return;
+    }
+    let mut cursor = app
+        .reconcile_cursor
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let batch = app
+        .config
+        .cores
+        .reconcile_batch_size
+        .max(1)
+        .min(cores.len());
+    for offset in 0..batch {
+        let (faction_id, core) = &cores[(*cursor + offset) % cores.len()];
+        let Some(world) = server.get_world_by_name(&core.location.world) else {
+            continue;
+        };
+        let claim = core.location.claim();
+        if world.get_chunk(claim.chunk_x, claim.chunk_z).is_none() {
+            continue;
+        }
+        let position = BlockPos {
+            x: core.location.x,
+            y: core.location.y,
+            z: core.location.z,
+        };
+        if world.get_block(position).name == "minecraft:beacon" {
+            continue;
+        }
+        let flags = BlockFlags::NOTIFY_NEIGHBORS | BlockFlags::NOTIFY_LISTENERS;
+        if !world.set_block_by_name(position, "minecraft:beacon", flags) {
+            tracing::warn!("Could not restore core for {faction_id}");
+            continue;
+        }
+        let now = App::now();
+        let _ = app.mutate("scheduler", "restore-core", |state| {
+            state.push_event(
+                "core.restored",
+                now,
+                serde_json::json!({"faction_id": faction_id, "location": core.location}),
+            );
+            Ok(())
+        });
+    }
+    *cursor = (*cursor + batch) % cores.len();
+}
 
 fn register_command(context: &Context, app: Arc<App>) {
     let handler = FactionCommand { app: app.clone() };
@@ -259,7 +516,8 @@ fn send_help(player: &pumpkin_plugin_api::Player, requested_page: &str) -> Resul
         2 => &[
             "§6§lCalabazaFactions Help §7• §aTerritory & Economy §8(2/3)",
             "§e/faction claim|unclaim|overclaim§7 — Manage the current chunk",
-            "§e/faction map§7 — Show relations and zones around you",
+            "§e/faction map§7 — Open the read-only territory map",
+            "§e/faction territory§7 — Open strategic chunk management",
             "§e/faction sethome|home§7 — Set or visit faction home",
             "§e/faction setcore|core§7 — Set or visit the faction core",
             "§e/faction upgrade <power|territory|vault|shield>§7 — Upgrade the core",
@@ -326,21 +584,74 @@ fn execute(
                 Visibility::Public
             };
             let id = app.mutate(&player_id, "create", |s| {
-                s.create(
+                let id = s.create(
                     name,
                     &player_id,
                     vis,
                     now,
                     app.config.factions.starting_power,
-                )
+                )?;
+                s.push_event(
+                    "faction.created",
+                    now,
+                    serde_json::json!({"faction_id": id, "name": name, "leader": player_id}),
+                );
+                Ok(id)
             })?;
             Ok(format!("Faction {id} created."))
         }
         "disband" => {
-            app.mutate(&player_id, "disband", |s| {
+            let active_core = {
+                let state = app.state.lock().unwrap_or_else(|error| error.into_inner());
+                let id = require_leader(&state, &player_id)?;
+                state.factions[&id]
+                    .physical_core
+                    .as_ref()
+                    .map(|core| core.location.clone())
+            };
+            if let Some(location) = &active_core {
+                let world = server
+                    .get_world_by_name(&location.world)
+                    .ok_or("the core world must be available before disbanding")?;
+                if world
+                    .get_chunk(location.x.div_euclid(16), location.z.div_euclid(16))
+                    .is_none()
+                {
+                    return Err("the core chunk must be loaded before disbanding".into());
+                }
+            }
+            let core_location = app.mutate(&player_id, "disband", |s| {
                 let id = require_leader(s, &player_id)?;
-                s.delete(&id)
+                let name = s.factions[&id].name.clone();
+                let core_location = s.factions[&id]
+                    .physical_core
+                    .as_ref()
+                    .map(|core| core.location.clone());
+                s.delete(&id)?;
+                s.push_event(
+                    "faction.disbanded",
+                    now,
+                    serde_json::json!({"faction_id": id, "name": name, "leader": player_id}),
+                );
+                Ok(core_location)
             })?;
+            if let Some(location) = core_location
+                && let Some(world) = server.get_world_by_name(&location.world)
+                && world
+                    .get_chunk(location.x.div_euclid(16), location.z.div_euclid(16))
+                    .is_some()
+            {
+                let flags = BlockFlags::NOTIFY_NEIGHBORS | BlockFlags::NOTIFY_LISTENERS;
+                let _ = world.set_block_by_name(
+                    BlockPos {
+                        x: location.x,
+                        y: location.y,
+                        z: location.z,
+                    },
+                    "minecraft:air",
+                    flags,
+                );
+            }
             Ok("Faction disbanded.".into())
         }
         "invite" => {
@@ -528,8 +839,49 @@ fn execute(
                 f.claims.len()
             ))
         }
-        "claim" | "overclaim" | "unclaim" => territory_command(app, player, &player_id, &action),
-        "map" => map_command(app, player, &player_id),
+        "claim" | "overclaim" | "unclaim" => {
+            territory_command(app, server, player, &player_id, &action)
+        }
+        "territoryconfirm" => {
+            let pending = app
+                .pending_territory
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .remove(&player_id)
+                .ok_or("no territory action is awaiting confirmation")?;
+            if pending.expires_at < now {
+                return Err("the territory confirmation expired".into());
+            }
+            territory_at(app, server, &player_id, &pending.action, pending.claim)
+        }
+        "territorycancel" => {
+            app.pending_territory
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .remove(&player_id)
+                .ok_or("no territory action is awaiting confirmation")?;
+            Ok("Territory action cancelled.".into())
+        }
+        "map" | "territory" => {
+            let management = action == "territory";
+            if management {
+                let state = app.state.lock().unwrap_or_else(|error| error.into_inner());
+                require_permission(app, &state, &player_id, RankPermission::Territory)?;
+            }
+            ui::open_territory(
+                app,
+                player,
+                TerritoryView {
+                    origin: App::claim_at(player),
+                    offset_x: 0,
+                    offset_z: 0,
+                    management,
+                    last_refresh_at: now
+                        .saturating_sub(app.config.territory_ui.refresh_cooldown_seconds),
+                },
+            )?;
+            Ok(String::new())
+        }
         "sethome" | "setprison" => {
             let loc = App::location(player);
             app.mutate(&player_id, &action, |s| {
@@ -603,7 +955,9 @@ fn execute(
         "setarena" | "addarenaspawn" | "delarena" | "arenas" => {
             arena_command(app, &player_id, &action, &words, is_admin)
         }
-        "setzone" | "delzone" | "zones" => zone_command(app, &player_id, &action, &words, is_admin),
+        "setzone" | "convertzone" | "delzone" | "zones" | "zoneconfirm" | "zonecancel" => {
+            zone_command(app, &player_id, &action, &words, is_admin)
+        }
         "war" | "forcewar" => start_war(
             app,
             &player_id,
@@ -643,36 +997,130 @@ fn execute(
 
 fn territory_command(
     app: &App,
+    server: &Server,
     player: &pumpkin_plugin_api::Player,
     player_id: &str,
     action: &str,
 ) -> Result<String, String> {
-    let claim = App::claim_at(player);
+    territory_at(app, server, player_id, action, App::claim_at(player))
+}
+
+fn territory_at(
+    app: &App,
+    server: &Server,
+    player_id: &str,
+    action: &str,
+    claim: Claim,
+) -> Result<String, String> {
+    let world = server
+        .get_world_by_name(&claim.world)
+        .ok_or("the selected world is unavailable")?;
+    if world.get_chunk(claim.chunk_x, claim.chunk_z).is_none() {
+        return Err("the selected chunk is unloaded; enter the area before changing it".into());
+    }
+    let border = world.get_border();
+    let min_x = f64::from(claim.chunk_x * 16);
+    let min_z = f64::from(claim.chunk_z * 16);
+    if !border.contains(min_x, min_z) || !border.contains(min_x + 15.0, min_z + 15.0) {
+        return Err("the complete chunk must be inside the world border".into());
+    }
     match action {
         "claim" => {
             app.mutate(player_id, "claim", |state| {
                 let id = require_permission(app, state, player_id, RankPermission::Territory)?;
-                let level = state.factions[&id].upgrade_level(UpgradeKind::Territory);
-                let bonus = usize::from(level) * app.config.cores.claims_per_level;
-                state.claim_with_bonus(&id, claim, bonus)
+                if state.zone_at(
+                    &claim.world,
+                    claim.chunk_x * 16 + 8,
+                    claim.chunk_z * 16 + 8,
+                ).is_some() {
+                    return Err("server-owned zones cannot be claimed".into());
+                }
+                if app.config.cores.max_claim_distance_from_core > 0 {
+                    let core_claim = state.factions[&id]
+                        .physical_core
+                        .as_ref()
+                        .ok_or("the faction core is not active")?
+                        .location
+                        .claim();
+                    let distance = (core_claim.chunk_x - claim.chunk_x).abs()
+                        + (core_claim.chunk_z - claim.chunk_z).abs();
+                    if distance > app.config.cores.max_claim_distance_from_core {
+                        return Err("the configured anti-corridor distance limit was reached".into());
+                    }
+                }
+                if state.factions.iter().any(|(other_id, other)| {
+                    other_id != &id
+                        && other.physical_core.as_ref().is_some_and(|core| {
+                            let core_claim = core.location.claim();
+                            core_claim.world == claim.world
+                                && (core_claim.chunk_x - claim.chunk_x).abs()
+                                    <= app.config.cores.enemy_core_distance_chunks
+                                && (core_claim.chunk_z - claim.chunk_z).abs()
+                                    <= app.config.cores.enemy_core_distance_chunks
+                        })
+                }) {
+                    return Err("the chunk is too close to another faction core".into());
+                }
+                let capacity = app.core_claim_capacity(&state.factions[&id]);
+                state.strategic_claim(&id, claim.clone(), capacity)?;
+                state.push_event(
+                    "territory.claimed",
+                    App::now(),
+                    serde_json::json!({"faction_id": id, "world": claim.world, "chunk_x": claim.chunk_x, "chunk_z": claim.chunk_z}),
+                );
+                Ok(())
             })?;
             Ok("Chunk claimed.".into())
         }
         "overclaim" => {
             let previous = app.mutate(player_id, "overclaim", |state| {
                 let id = require_permission(app, state, player_id, RankPermission::Territory)?;
-                let level = state.factions[&id].upgrade_level(UpgradeKind::Territory);
-                let bonus = usize::from(level) * app.config.cores.claims_per_level;
-                state.overclaim_with_bonus(&id, claim, bonus)
+                if app.config.cores.max_claim_distance_from_core > 0 {
+                    let core_claim = state.factions[&id]
+                        .physical_core
+                        .as_ref()
+                        .ok_or("the faction core is not active")?
+                        .location
+                        .claim();
+                    let distance = (core_claim.chunk_x - claim.chunk_x).abs()
+                        + (core_claim.chunk_z - claim.chunk_z).abs();
+                    if distance > app.config.cores.max_claim_distance_from_core {
+                        return Err("the configured anti-corridor distance limit was reached".into());
+                    }
+                }
+                if state.factions.iter().any(|(other_id, other)| {
+                    other_id != &id
+                        && other.physical_core.as_ref().is_some_and(|core| {
+                            let core_claim = core.location.claim();
+                            core_claim.world == claim.world
+                                && (core_claim.chunk_x - claim.chunk_x).abs()
+                                    <= app.config.cores.enemy_core_distance_chunks
+                                && (core_claim.chunk_z - claim.chunk_z).abs()
+                                    <= app.config.cores.enemy_core_distance_chunks
+                        })
+                }) {
+                    return Err("the chunk is too close to another faction core".into());
+                }
+                let capacity = app.core_claim_capacity(&state.factions[&id]);
+                let previous = state.strategic_overclaim(&id, claim.clone(), capacity)?;
+                state.push_event(
+                    "territory.overclaimed",
+                    App::now(),
+                    serde_json::json!({"faction_id": id, "previous_faction_id": previous, "world": claim.world, "chunk_x": claim.chunk_x, "chunk_z": claim.chunk_z}),
+                );
+                Ok(previous)
             })?;
             Ok(format!("Overclaimed this chunk from {previous}."))
         }
         "unclaim" => {
             app.mutate(player_id, "unclaim", |state| {
                 let id = require_permission(app, state, player_id, RankPermission::Territory)?;
-                if !state.factions.get_mut(&id).unwrap().claims.remove(&claim) {
-                    return Err("your faction does not own this chunk".into());
-                }
+                state.unclaim_connected(&id, &claim)?;
+                state.push_event(
+                    "territory.unclaimed",
+                    App::now(),
+                    serde_json::json!({"faction_id": id, "world": claim.world, "chunk_x": claim.chunk_x, "chunk_z": claim.chunk_z}),
+                );
                 Ok(())
             })?;
             Ok("Chunk unclaimed.".into())
@@ -681,72 +1129,160 @@ fn territory_command(
     }
 }
 
-fn map_command(
-    app: &App,
-    player: &pumpkin_plugin_api::Player,
-    player_id: &str,
-) -> Result<String, String> {
-    let center = App::claim_at(player);
-    let state = app.state.lock().unwrap_or_else(|e| e.into_inner());
-    let own = state.player_faction.get(player_id);
-    let mut output = format!(
-        "Territory map • {} ({}, {})\n",
-        center.world, center.chunk_x, center.chunk_z
-    );
-    for dz in -4..=4 {
-        for dx in -4..=4 {
-            if dx == 0 && dz == 0 {
-                output.push('@');
-                continue;
-            }
-            let chunk = Claim {
-                world: center.world.clone(),
-                chunk_x: center.chunk_x + dx,
-                chunk_z: center.chunk_z + dz,
-            };
-            let block_x = chunk.chunk_x * 16 + 8;
-            let block_z = chunk.chunk_z * 16 + 8;
-            let marker = if let Some(zone) = state.zone_at(&chunk.world, block_x, block_z) {
-                match zone.kind {
-                    ZoneKind::Safe => 'S',
-                    ZoneKind::War => 'W',
-                }
-            } else if let Some(owner) = state.claim_owner(&chunk) {
-                if own.is_some_and(|id| id == &owner.id) {
-                    'O'
-                } else if let Some(id) = own {
-                    match state.relation(id, &owner.id) {
-                        Relation::Ally => 'A',
-                        Relation::Enemy => 'E',
-                        Relation::Truce => 'T',
-                        Relation::Neutral => '#',
-                    }
-                } else {
-                    '#'
-                }
-            } else {
-                '.'
-            };
-            output.push(marker);
-        }
-        output.push('\n');
-    }
-    output.push_str("@ you • O own • A ally • T truce • E enemy • S safe • W war • . wild");
-    Ok(output)
-}
-
 fn set_core(
     app: &App,
     player_id: &str,
     player: &pumpkin_plugin_api::Player,
 ) -> Result<String, String> {
-    let location = App::location(player);
-    app.mutate(player_id, "set-core", |state| {
-        let id = require_permission(app, state, player_id, RankPermission::Core)?;
-        state.factions.get_mut(&id).unwrap().core = Some(location);
+    let (x, y, z) = player.get_position();
+    let location = BlockLocation {
+        world: player.get_world().get_id(),
+        x: x.floor() as i32,
+        y: y.floor() as i32,
+        z: z.floor() as i32,
+    };
+    let initial_claims = App::initial_core_claims(&location);
+    let now = App::now();
+    let (faction_id, max_lives, replacement_cost) = {
+        let state = app.state.lock().unwrap_or_else(|error| error.into_inner());
+        let faction_id = require_permission(app, &state, player_id, RankPermission::Core)?;
+        let faction = &state.factions[&faction_id];
+        if faction.has_active_core() {
+            return Err("your faction already has an active physical core".into());
+        }
+        if faction.core_destroyed_at > now {
+            return Err(format!(
+                "a replacement core may be established after Unix time {}",
+                faction.core_destroyed_at
+            ));
+        }
+        let replacement_cost = if faction.core_lifecycle == CoreLifecycle::Destroyed {
+            app.config.cores.replacement_cost.max(0)
+        } else {
+            0
+        };
+        if faction.bank < replacement_cost {
+            return Err(format!(
+                "the faction bank needs {replacement_cost} to establish a replacement core"
+            ));
+        }
+        for claim in &initial_claims {
+            if player
+                .get_world()
+                .get_chunk(claim.chunk_x, claim.chunk_z)
+                .is_none()
+            {
+                return Err("all nine starting territory chunks must be loaded".into());
+            }
+            let border = player.get_world().get_border();
+            let min_x = f64::from(claim.chunk_x * 16);
+            let min_z = f64::from(claim.chunk_z * 16);
+            if !border.contains(min_x, min_z) || !border.contains(min_x + 15.0, min_z + 15.0) {
+                return Err(
+                    "all nine starting territory chunks must fit inside the world border".into(),
+                );
+            }
+            if state
+                .zone_at(&claim.world, claim.chunk_x * 16 + 8, claim.chunk_z * 16 + 8)
+                .is_some()
+            {
+                return Err("the 3x3 starting territory overlaps a server-owned zone".into());
+            }
+            if let Some(owner) = state.claim_owners.get(&claim.key())
+                && owner != &faction_id
+            {
+                return Err(format!(
+                    "the 3x3 starting territory overlaps faction {owner}"
+                ));
+            }
+        }
+        let center = location.claim();
+        for (other_id, other) in &state.factions {
+            if other_id == &faction_id {
+                continue;
+            }
+            if let Some(other_core) = &other.physical_core {
+                let other_claim = other_core.location.claim();
+                if other_claim.world == center.world
+                    && (other_claim.chunk_x - center.chunk_x).abs()
+                        <= app.config.cores.enemy_core_distance_chunks
+                    && (other_claim.chunk_z - center.chunk_z).abs()
+                        <= app.config.cores.enemy_core_distance_chunks
+                {
+                    return Err("the proposed core is too close to another faction core".into());
+                }
+            }
+        }
+        (faction_id, app.core_max_lives(faction), replacement_cost)
+    };
+
+    let radius = app.config.cores.clearance_radius.max(0);
+    let height = app.config.cores.clearance_height.max(0);
+    for dy in 0..=height {
+        for dz in -radius..=radius {
+            for dx in -radius..=radius {
+                let pos = BlockPos {
+                    x: location.x + dx,
+                    y: location.y + dy,
+                    z: location.z + dz,
+                };
+                let block = player.get_world().get_block(pos);
+                if !matches!(
+                    block.name.as_str(),
+                    "minecraft:air" | "minecraft:cave_air" | "minecraft:void_air"
+                ) {
+                    return Err(format!(
+                        "core clearance is blocked at {}, {}, {} by {}",
+                        pos.x, pos.y, pos.z, block.name
+                    ));
+                }
+            }
+        }
+    }
+
+    let block_pos = BlockPos {
+        x: location.x,
+        y: location.y,
+        z: location.z,
+    };
+    let flags = BlockFlags::NOTIFY_NEIGHBORS | BlockFlags::NOTIFY_LISTENERS;
+    if !player
+        .get_world()
+        .set_block_by_name(block_pos, "minecraft:beacon", flags)
+    {
+        return Err("Pumpkin could not place the beacon block".into());
+    }
+    let core = PhysicalCore {
+        location: location.clone(),
+        lives: max_lives,
+        max_lives,
+        last_hit_at: 0,
+        established_at: now,
+    };
+    let result = app.mutate(player_id, "set-core", |state| {
+        state.factions.get_mut(&faction_id).unwrap().bank -= replacement_cost;
+        state.establish_core(&faction_id, core, initial_claims, now)?;
+        state.push_event(
+            "core.established",
+            now,
+            serde_json::json!({"faction_id": faction_id, "world": location.world, "x": location.x, "y": location.y, "z": location.z, "lives": max_lives}),
+        );
         Ok(())
-    })?;
-    Ok("Faction core set.".into())
+    });
+    if let Err(error) = result {
+        let _ = player
+            .get_world()
+            .set_block_by_name(block_pos, "minecraft:air", flags);
+        return Err(error);
+    }
+    Ok(format!(
+        "Physical faction core established with {max_lives} lives and a 3x3 territory{}.",
+        if replacement_cost > 0 {
+            format!(" for {replacement_cost}")
+        } else {
+            String::new()
+        }
+    ))
 }
 
 fn teleport_to_core(
@@ -785,6 +1321,19 @@ fn upgrade_core(app: &App, player_id: &str, value: &str) -> Result<String, Strin
         }
         faction.bank -= cost;
         faction.upgrades.insert(kind.clone(), level);
+        if kind == UpgradeKind::Territory
+            && let Some(core) = faction.physical_core.as_mut()
+        {
+            let max_lives =
+                app.config.cores.starting_lives.saturating_add(
+                    u32::from(level).saturating_mul(app.config.cores.lives_per_level),
+                );
+            core.max_lives = max_lives;
+            core.lives = core
+                .lives
+                .saturating_add(app.config.cores.lives_per_level)
+                .min(max_lives);
+        }
         Ok((level, cost))
     })?;
     Ok(format!("Upgraded {kind:?} to level {level} for {cost}."))
@@ -946,10 +1495,67 @@ fn zone_command(
                         id: id.clone(),
                         kind,
                         first: None,
+                        second: None,
                     },
                 );
             Ok(format!(
                 "Zone '{id}' setup started. Tap the first corner block."
+            ))
+        }
+        "convertzone" => {
+            let id = FactionState::normalize(
+                words
+                    .get(1)
+                    .ok_or("usage: /faction convertzone <legacy-zone>")?,
+            );
+            let zone = app
+                .state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .zones
+                .get(&id)
+                .cloned()
+                .ok_or("zone not found")?;
+            if zone.chunk_aligned {
+                return Err("that zone is already chunk-aligned".into());
+            }
+            let first = Location {
+                world: zone.world.clone(),
+                x: f64::from(zone.min_x),
+                y: 0.0,
+                z: f64::from(zone.min_z),
+            };
+            let second = Location {
+                world: zone.world,
+                x: f64::from(zone.max_x),
+                y: 0.0,
+                z: f64::from(zone.max_z),
+            };
+            let buffer = match zone.kind {
+                ZoneKind::Safe => app.config.zones.safe_buffer_chunks,
+                ZoneKind::War => app.config.zones.war_buffer_chunks,
+            }
+            .max(0);
+            let min_chunk_x = (first.x.floor() as i32).div_euclid(16) - buffer;
+            let max_chunk_x = (second.x.floor() as i32).div_euclid(16) + buffer;
+            let min_chunk_z = (first.z.floor() as i32).div_euclid(16) - buffer;
+            let max_chunk_z = (second.z.floor() as i32).div_euclid(16) + buffer;
+            let count =
+                i64::from(max_chunk_x - min_chunk_x + 1) * i64::from(max_chunk_z - min_chunk_z + 1);
+            app.zone_setup
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .insert(
+                    player_id.into(),
+                    ZoneSetup {
+                        id: id.clone(),
+                        kind: zone.kind,
+                        first: Some(first),
+                        second: Some(second),
+                    },
+                );
+            Ok(format!(
+                "Legacy zone '{id}' would become chunks ({min_chunk_x}, {min_chunk_z}) through ({max_chunk_x}, {max_chunk_z}), {count} chunks including buffer. Use /faction zoneconfirm or /faction zonecancel."
             ))
         }
         "delzone" => {
@@ -983,52 +1589,156 @@ fn zone_command(
                 .collect::<Vec<_>>()
                 .join("\n"))
         }
+        "zonecancel" => {
+            app.zone_setup
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .remove(player_id)
+                .ok_or("no zone setup is awaiting confirmation")?;
+            Ok("Zone setup cancelled.".into())
+        }
+        "zoneconfirm" => {
+            let setup = app
+                .zone_setup
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .remove(player_id)
+                .ok_or("no zone setup is awaiting confirmation")?;
+            let first = setup
+                .first
+                .ok_or("the first corner has not been selected")?;
+            let second = setup
+                .second
+                .ok_or("the opposite corner has not been selected")?;
+            let buffer = match setup.kind {
+                ZoneKind::Safe => app.config.zones.safe_buffer_chunks,
+                ZoneKind::War => app.config.zones.war_buffer_chunks,
+            };
+            let count = app.mutate(player_id, "set-zone", |state| {
+                state.set_chunk_zone(&setup.id, setup.kind, &first, &second, buffer)
+            })?;
+            Ok(format!(
+                "Zone '{}' saved across {count} whole chunks.",
+                setup.id
+            ))
+        }
         _ => unreachable!(),
     }
 }
 
 fn bank_command(app: &App, p: &str, words: &[&str]) -> Result<String, String> {
     let op = words.get(1).copied().unwrap_or("balance");
-    app.mutate(p, "bank", |s| {
-        let id = require_faction(s, p)?;
-        match op {
-            "balance" => Ok(format!(
-                "Faction bank: {} • Wallet: {}",
-                s.factions[&id].bank,
-                s.wallets.get(p).copied().unwrap_or(0)
-            )),
-            "deposit" => {
-                let n = words
-                    .get(2)
-                    .ok_or("usage: /faction bank deposit <amount>")?
-                    .parse::<i64>()
-                    .map_err(|_| "invalid amount")?;
-                if n <= 0 || s.wallets.get(p).copied().unwrap_or(0) < n {
-                    return Err("insufficient wallet balance".into());
-                }
-                *s.wallets.entry(p.into()).or_default() -= n;
-                s.factions.get_mut(&id).unwrap().bank += n;
-                Ok(format!("Deposited {n}."))
+    if op == "balance" {
+        let snapshot = app
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
+        let id = require_faction(&snapshot, p)?;
+        let wallet = economy::balance(&app.config.economy, &snapshot, p)?;
+        return Ok(format!(
+            "Faction bank: {} • Wallet: {}",
+            snapshot.factions[&id].bank, wallet
+        ));
+    }
+    let amount = words
+        .get(2)
+        .ok_or("usage: /faction bank <deposit|withdraw> <amount>")?
+        .parse::<i64>()
+        .map_err(|_| "invalid amount")?;
+    if amount <= 0 {
+        return Err("amount must be positive".into());
+    }
+    let transaction_id = format!("cf:{}:{}:{}:{}", op, p, App::now(), amount);
+    match op {
+        "deposit" => {
+            if app.config.economy.mode == config::EconomyMode::Standalone {
+                return app.mutate(p, "bank-deposit", |state| {
+                    let id = require_faction(state, p)?;
+                    economy::debit(
+                        &app.config.economy,
+                        state,
+                        p,
+                        amount,
+                        &transaction_id,
+                        "faction_bank_deposit",
+                    )?;
+                    state.factions.get_mut(&id).unwrap().bank += amount;
+                    Ok(format!("Deposited {amount}."))
+                });
             }
-            "withdraw" => {
-                if !app.rank_allows(s, p, RankPermission::Economy) {
-                    return Err("your faction rank cannot withdraw from the bank".into());
-                }
-                let n = words
-                    .get(2)
-                    .ok_or("usage: /faction bank withdraw <amount>")?
-                    .parse::<i64>()
-                    .map_err(|_| "invalid amount")?;
-                if n <= 0 || s.factions[&id].bank < n {
+            let mut external_state = FactionState::default();
+            economy::debit(
+                &app.config.economy,
+                &mut external_state,
+                p,
+                amount,
+                &transaction_id,
+                "faction_bank_deposit",
+            )?;
+            if let Err(error) = app.mutate(p, "bank-deposit", |state| {
+                let id = require_faction(state, p)?;
+                state.factions.get_mut(&id).unwrap().bank += amount;
+                Ok(())
+            }) {
+                let _ = economy::credit(
+                    &app.config.economy,
+                    &mut external_state,
+                    p,
+                    amount,
+                    &format!("{transaction_id}:rollback"),
+                    "faction_bank_deposit_rollback",
+                );
+                return Err(error);
+            }
+            Ok(format!("Deposited {amount}."))
+        }
+        "withdraw" => {
+            app.mutate(p, "bank-withdraw", |state| {
+                let id = require_permission(app, state, p, RankPermission::Economy)?;
+                if state.factions[&id].bank < amount {
                     return Err("insufficient faction balance".into());
                 }
-                s.factions.get_mut(&id).unwrap().bank -= n;
-                *s.wallets.entry(p.into()).or_default() += n;
-                Ok(format!("Withdrew {n}."))
+                state.factions.get_mut(&id).unwrap().bank -= amount;
+                if app.config.economy.mode == config::EconomyMode::Standalone {
+                    economy::credit(
+                        &app.config.economy,
+                        state,
+                        p,
+                        amount,
+                        &transaction_id,
+                        "faction_bank_withdrawal",
+                    )?;
+                }
+                Ok(())
+            })?;
+            if app.config.economy.mode == config::EconomyMode::External {
+                let mut external_state = FactionState::default();
+                if let Err(error) = economy::credit(
+                    &app.config.economy,
+                    &mut external_state,
+                    p,
+                    amount,
+                    &transaction_id,
+                    "faction_bank_withdrawal",
+                ) {
+                    let rollback = app.mutate(p, "bank-withdraw-rollback", |state| {
+                        let id = require_faction(state, p)?;
+                        state.factions.get_mut(&id).unwrap().bank += amount;
+                        Ok(())
+                    });
+                    return Err(match rollback {
+                        Ok(()) => error,
+                        Err(rollback_error) => {
+                            format!("{error}; faction-bank rollback also failed: {rollback_error}")
+                        }
+                    });
+                }
             }
-            _ => Err("bank options: balance, deposit, withdraw".into()),
+            Ok(format!("Withdrew {amount}."))
         }
-    })
+        _ => Err("bank options: balance, deposit, withdraw".into()),
+    }
 }
 
 fn start_war(app: &App, p: &str, target: &str, forced: bool, now: u64) -> Result<String, String> {
@@ -1097,6 +1807,16 @@ fn start_war(app: &App, p: &str, target: &str, forced: bool, now: u64) -> Result
             ),
             now,
         );
+        s.push_event(
+            "war.declared",
+            now,
+            serde_json::json!({
+                "war_id": id,
+                "attacker": attacker,
+                "defender": target,
+                "forced": forced,
+            }),
+        );
         Ok(())
     })?;
     Ok(if forced {
@@ -1118,12 +1838,24 @@ fn answer_war(app: &App, p: &str, accept: bool, now: u64) -> Result<String, Stri
             })
             .max_by_key(|w| w.requested_at)
             .ok_or("no pending war request")?;
+        let war_id = war.id.clone();
+        let attacker = war.attacker.clone();
+        let defender = war.defender.clone();
         if accept {
             war.status = WarStatus::Preparing;
             war.preparation_ends_at = Some(now + app.config.war.preparation_hours * 3600)
         } else {
             war.status = WarStatus::Declined
         }
+        s.push_event(
+            if accept {
+                "war.accepted"
+            } else {
+                "war.declined"
+            },
+            now,
+            serde_json::json!({"war_id": war_id, "attacker": attacker, "defender": defender}),
+        );
         Ok(())
     })?;
     Ok(if accept {
@@ -1146,6 +1878,14 @@ fn ready_war(app: &App, server: &Server, p: &str, now: u64) -> Result<String, St
         if war.ready.len() == 2 {
             war.status = WarStatus::Active;
             war.battle_ends_at = Some(now + app.config.war.battle_minutes * 60);
+            let war_id = war.id.clone();
+            let attacker = war.attacker.clone();
+            let defender = war.defender.clone();
+            s.push_event(
+                "war.started",
+                now,
+                serde_json::json!({"war_id": war_id, "attacker": attacker, "defender": defender}),
+            );
             Ok(true)
         } else {
             war.preparation_ends_at = Some(
@@ -1208,6 +1948,7 @@ fn process_wars(app: &App, server: &Server) {
         let mut candidate = state.clone();
         let mut changed = false;
         let mut started = false;
+        let mut started_wars = Vec::new();
         let timed_out = candidate
             .wars
             .values()
@@ -1223,6 +1964,7 @@ fn process_wars(app: &App, server: &Server) {
                 WarStatus::Preparing if w.preparation_ends_at.is_some_and(|v| v <= now) => {
                     w.status = WarStatus::Active;
                     w.battle_ends_at = Some(now + app.config.war.battle_minutes * 60);
+                    started_wars.push((w.id.clone(), w.attacker.clone(), w.defender.clone()));
                     changed = true;
                     started = true;
                 }
@@ -1231,6 +1973,13 @@ fn process_wars(app: &App, server: &Server) {
             let before = w.prisoners.len();
             w.prisoners.retain(|_, prisoner| prisoner.release_at > now);
             changed |= before != w.prisoners.len();
+        }
+        for (war_id, attacker, defender) in started_wars {
+            candidate.push_event(
+                "war.started",
+                now,
+                serde_json::json!({"war_id": war_id, "attacker": attacker, "defender": defender}),
+            );
         }
         for (id, winner, loser) in timed_out {
             finish_war(&mut candidate, &id, &winner, &loser, &app.config);
@@ -1419,20 +2168,36 @@ impl EventHandler<PlayerInteractEvent> for Interact {
                 z: f64::from(pos.z),
             };
             if let Some(first) = setup.first {
+                let buffer = match setup.kind {
+                    ZoneKind::Safe => self.0.config.zones.safe_buffer_chunks,
+                    ZoneKind::War => self.0.config.zones.war_buffer_chunks,
+                }
+                .max(0);
+                let first_x = (first.x.floor() as i32).div_euclid(16);
+                let first_z = (first.z.floor() as i32).div_euclid(16);
+                let second_x = (location.x.floor() as i32).div_euclid(16);
+                let second_z = (location.z.floor() as i32).div_euclid(16);
+                let width = (first_x - second_x).abs() + 1 + buffer * 2;
+                let height = (first_z - second_z).abs() + 1 + buffer * 2;
                 self.0
                     .zone_setup
                     .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .remove(&id);
-                let result = self.0.mutate(&id, "set-zone", |state| {
-                    state.set_zone(&setup.id, setup.kind.clone(), &first, &location)
-                });
-                let message = result
-                    .map(|()| format!("Zone '{}' saved.", setup.id))
-                    .unwrap_or_else(|error| error);
-                event
-                    .player
-                    .send_system_message(TextComponent::text(&message), false);
+                    .unwrap_or_else(|error| error.into_inner())
+                    .insert(
+                        id,
+                        ZoneSetup {
+                            first: Some(first),
+                            second: Some(location),
+                            ..setup
+                        },
+                    );
+                event.player.send_system_message(
+                    TextComponent::text(&format!(
+                        "Zone preview: {width}x{height} chunks (buffer {buffer}), {} total. Use /faction zoneconfirm or /faction zonecancel.",
+                        width.saturating_mul(height)
+                    )),
+                    false,
+                );
             } else {
                 self.0
                     .zone_setup
@@ -1442,6 +2207,7 @@ impl EventHandler<PlayerInteractEvent> for Interact {
                         id,
                         ZoneSetup {
                             first: Some(location),
+                            second: None,
                             ..setup
                         },
                     );
@@ -1528,6 +2294,16 @@ impl EventHandler<PlayerLeaveEvent> for Leave {
             .unwrap_or_else(|e| e.into_inner())
             .remove(&id);
         self.0
+            .territory_views
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&id);
+        self.0
+            .pending_territory
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&id);
+        self.0
             .arena_setup
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -1583,9 +2359,111 @@ struct Break(Arc<App>);
 impl EventHandler<BlockBreakEvent> for Break {
     fn handle(
         &self,
-        _: Server,
+        server: Server,
         mut event: EventData<BlockBreakEvent>,
     ) -> EventData<BlockBreakEvent> {
+        let world = event
+            .player
+            .as_ref()
+            .map(|player| player.get_world().get_id());
+        if let Some(world) = world
+            && let Some((core_faction, _)) = self.0.core_at(
+                &world,
+                event.block_pos.x,
+                event.block_pos.y,
+                event.block_pos.z,
+            )
+        {
+            event.cancelled = true;
+            let Some(player) = &event.player else {
+                return event;
+            };
+            let player_id = pid(player);
+            let now = App::now();
+            let result = self.0.mutate(&player_id, "core-hit", |state| {
+                let attacker_faction = state
+                    .player_faction
+                    .get(&player_id)
+                    .cloned()
+                    .ok_or("only a faction enemy can damage a core")?;
+                if attacker_faction == core_faction {
+                    return Err("faction members cannot damage their own core".into());
+                }
+                if state.relation(&attacker_faction, &core_faction) != Relation::Enemy {
+                    return Err("only an enemy faction can damage this core".into());
+                }
+                let core = state.factions[&core_faction]
+                    .physical_core
+                    .as_ref()
+                    .ok_or("the core is no longer active")?;
+                if core.last_hit_at.saturating_add(self.0.config.cores.hit_cooldown_seconds) > now {
+                    return Err("the core is temporarily invulnerable after the last hit".into());
+                }
+                let faction_name = state.factions[&core_faction].name.clone();
+                let core = state.factions.get_mut(&core_faction).unwrap().physical_core.as_mut().unwrap();
+                core.last_hit_at = now;
+                core.lives = core.lives.saturating_sub(1);
+                let remaining = core.lives;
+                state.push_event(
+                    "core.attacked",
+                    now,
+                    serde_json::json!({"faction_id": core_faction, "faction_name": faction_name, "attacker_uuid": player_id, "remaining_lives": remaining, "world": world, "x": event.block_pos.x, "y": event.block_pos.y, "z": event.block_pos.z}),
+                );
+                let destroyed = remaining == 0;
+                if destroyed {
+                    state.destroy_core(
+                        &core_faction,
+                        now,
+                        now.saturating_add(self.0.config.cores.replacement_cooldown_seconds),
+                    )?;
+                    state.push_event(
+                        "core.destroyed",
+                        now,
+                        serde_json::json!({"faction_id": core_faction, "faction_name": faction_name, "attacker_uuid": player_id}),
+                    );
+                }
+                Ok((remaining, destroyed))
+            });
+            match result {
+                Ok((remaining, destroyed)) => {
+                    player.send_system_message(
+                        TextComponent::text(&format!(
+                            "Core hit registered. Remaining lives: {remaining}."
+                        )),
+                        false,
+                    );
+                    for online in server.get_all_players() {
+                        let online_id = pid(&online);
+                        let member = self
+                            .0
+                            .state
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner())
+                            .player_faction
+                            .get(&online_id)
+                            == Some(&core_faction);
+                        if member {
+                            online.send_system_message(
+                                TextComponent::text(&format!(
+                                    "Your faction core was attacked! {remaining} lives remain."
+                                )),
+                                false,
+                            );
+                        }
+                    }
+                    if destroyed {
+                        let flags = BlockFlags::NOTIFY_NEIGHBORS | BlockFlags::NOTIFY_LISTENERS;
+                        let _ = player.get_world().set_block_by_name(
+                            event.block_pos,
+                            "minecraft:air",
+                            flags,
+                        );
+                    }
+                }
+                Err(error) => player.send_system_message(TextComponent::text(&error), false),
+            }
+            return event;
+        }
         if let Some(p) = &event.player
             && !self.0.can_build_at(p, event.block_pos.x, event.block_pos.z)
         {
@@ -1606,6 +2484,24 @@ impl EventHandler<BlockPlaceEvent> for Place {
         mut event: EventData<BlockPlaceEvent>,
     ) -> EventData<BlockPlaceEvent> {
         let p = &event.player;
+        let world = p.get_world().get_id();
+        if self
+            .0
+            .core_clearance_owner(
+                &world,
+                event.block_pos.x,
+                event.block_pos.y,
+                event.block_pos.z,
+            )
+            .is_some()
+        {
+            event.cancelled = true;
+            p.send_system_message(
+                TextComponent::text("Blocks cannot be placed inside a faction core's clearance."),
+                false,
+            );
+            return event;
+        }
         if !self.0.can_build_at(p, event.block_pos.x, event.block_pos.z) {
             event.cancelled = true;
             p.send_system_message(
@@ -1912,12 +2808,206 @@ fn finish_war(s: &mut FactionState, id: &str, winner: &str, loser: &str, cfg: &c
     if paid == amount {
         w.prisoners.clear();
     }
+    s.push_event(
+        "war.ended",
+        now,
+        serde_json::json!({
+            "war_id": id,
+            "winner": winner,
+            "loser": loser,
+            "reparations": paid,
+        }),
+    );
 }
+
+fn queue_territory_action(app: &App, player: &pumpkin_plugin_api::Player, claim: Claim) {
+    let player_id = pid(player);
+    let result = (|| -> Result<(String, String), String> {
+        if player.get_world().get_id() != claim.world
+            || player
+                .get_world()
+                .get_chunk(claim.chunk_x, claim.chunk_z)
+                .is_none()
+        {
+            return Err("unknown or unloaded chunks are informational only".into());
+        }
+        let min_x = f64::from(claim.chunk_x * 16);
+        let min_z = f64::from(claim.chunk_z * 16);
+        let border = player.get_world().get_border();
+        if !border.contains(min_x, min_z) || !border.contains(min_x + 15.0, min_z + 15.0) {
+            return Err("out-of-border chunks are informational only".into());
+        }
+        let state = app.state.lock().unwrap_or_else(|error| error.into_inner());
+        let faction_id = require_permission(app, &state, &player_id, RankPermission::Territory)?;
+        if state
+            .zone_at(&claim.world, claim.chunk_x * 16 + 8, claim.chunk_z * 16 + 8)
+            .is_some()
+        {
+            return Err("server-owned zones cannot be managed".into());
+        }
+        if state.factions.values().any(|faction| {
+            faction
+                .physical_core
+                .as_ref()
+                .is_some_and(|core| core.location.claim() == claim)
+        }) {
+            return Err("core chunks are informational and cannot be managed here".into());
+        }
+        let faction = &state.factions[&faction_id];
+        let validate_expansion = || -> Result<(), String> {
+            if faction.claims.len() >= app.core_claim_capacity(faction) {
+                return Err("your core level cannot support another chunk".into());
+            }
+            if !faction
+                .claims
+                .iter()
+                .any(|owned| owned.cardinally_adjacent(&claim))
+            {
+                return Err("only cardinal-adjacent chunks can be managed".into());
+            }
+            if app.config.cores.max_claim_distance_from_core > 0 {
+                let core_claim = faction
+                    .physical_core
+                    .as_ref()
+                    .ok_or("the faction core is not active")?
+                    .location
+                    .claim();
+                let distance = (core_claim.chunk_x - claim.chunk_x).abs()
+                    + (core_claim.chunk_z - claim.chunk_z).abs();
+                if distance > app.config.cores.max_claim_distance_from_core {
+                    return Err("the configured anti-corridor distance limit was reached".into());
+                }
+            }
+            if state.factions.iter().any(|(other_id, other)| {
+                other_id != &faction_id
+                    && other.physical_core.as_ref().is_some_and(|core| {
+                        let core_claim = core.location.claim();
+                        core_claim.world == claim.world
+                            && (core_claim.chunk_x - claim.chunk_x).abs()
+                                <= app.config.cores.enemy_core_distance_chunks
+                            && (core_claim.chunk_z - claim.chunk_z).abs()
+                                <= app.config.cores.enemy_core_distance_chunks
+                    })
+            }) {
+                return Err("the chunk is too close to another faction core".into());
+            }
+            Ok(())
+        };
+        let (action, description) = match state.claim_owner(&claim) {
+            None => {
+                validate_expansion()?;
+                (
+                    "claim",
+                    format!(
+                        "Claim wilderness chunk {}, {}",
+                        claim.chunk_x, claim.chunk_z
+                    ),
+                )
+            }
+            Some(owner) if owner.id == faction_id => {
+                if !state.removal_keeps_connected(&faction_id, &claim) {
+                    return Err("releasing that chunk would disconnect territory".into());
+                }
+                (
+                    "unclaim",
+                    format!("Release owned chunk {}, {}", claim.chunk_x, claim.chunk_z),
+                )
+            }
+            Some(owner) if state.relation(&faction_id, &owner.id) == Relation::Enemy => {
+                validate_expansion()?;
+                if !state.overclaimed(&owner.id)
+                    || !state.removal_keeps_connected(&owner.id, &claim)
+                {
+                    return Err("that enemy chunk is not currently eligible for overclaim".into());
+                }
+                (
+                    "overclaim",
+                    format!(
+                        "Overclaim chunk {}, {} from {}",
+                        claim.chunk_x, claim.chunk_z, owner.name
+                    ),
+                )
+            }
+            Some(_) => return Err("that faction territory is not eligible for management".into()),
+        };
+        Ok((action.into(), description))
+    })();
+    match result {
+        Ok((action, description)) => {
+            app.pending_territory
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .insert(
+                    player_id,
+                    PendingTerritoryAction {
+                        claim,
+                        action,
+                        expires_at: App::now().saturating_add(30),
+                    },
+                );
+            player.send_system_message(
+                TextComponent::text(&format!(
+                    "{description}. Confirm within 30 seconds with /faction territoryconfirm, or cancel with /faction territorycancel."
+                )),
+                false,
+            );
+        }
+        Err(error) => player.send_system_message(TextComponent::text(&error), false),
+    }
+}
+
+fn pan_territory(
+    app: &Arc<App>,
+    server: &Server,
+    player_id: &str,
+    mut view: TerritoryView,
+    dx: i32,
+    dz: i32,
+) {
+    let now = App::now();
+    if now
+        < view
+            .last_refresh_at
+            .saturating_add(app.config.territory_ui.refresh_cooldown_seconds)
+    {
+        let player_id = player_id.to_string();
+        server.schedule_delayed_task(1, move |server| {
+            if let Some(player) = server
+                .get_all_players()
+                .into_iter()
+                .find(|player| pid(player) == player_id)
+            {
+                player.send_system_message(
+                    TextComponent::text("Please wait before panning the territory map again."),
+                    false,
+                );
+            }
+        });
+        return;
+    }
+    let limit = app.config.territory_ui.max_pan_steps.max(0);
+    view.offset_x = (view.offset_x + dx).clamp(-limit, limit);
+    view.offset_z = (view.offset_z + dz).clamp(-limit, limit);
+    view.last_refresh_at = now;
+    let app = app.clone();
+    let player_id = player_id.to_string();
+    server.schedule_delayed_task(1, move |server| {
+        if let Some(player) = server
+            .get_all_players()
+            .into_iter()
+            .find(|player| pid(player) == player_id)
+            && let Err(error) = ui::open_territory(&app, &player, view.clone())
+        {
+            player.send_system_message(TextComponent::text(&error), false);
+        }
+    });
+}
+
 struct Click(Arc<App>);
 impl EventHandler<InventoryClickEvent> for Click {
     fn handle(
         &self,
-        _: Server,
+        server: Server,
         mut event: EventData<InventoryClickEvent>,
     ) -> EventData<InventoryClickEvent> {
         let id = pid(&event.player);
@@ -1928,9 +3018,33 @@ impl EventHandler<InventoryClickEvent> for Click {
             .unwrap_or_else(|e| e.into_inner())
             .get(&id)
             .cloned();
-        // GUI host calls from inside InventoryClickEvent can re-enter Pumpkin's runtime and
-        // freeze the server. Menus are deliberately informational; actions remain commands.
-        event.cancelled = matches!(view.as_deref(), Some("main") | Some("mail"));
+        event.cancelled = matches!(
+            view.as_deref(),
+            Some("main") | Some("mail") | Some("territory")
+        );
+        if view.as_deref() == Some("territory") {
+            let territory_view = self
+                .0
+                .territory_views
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .get(&id)
+                .cloned();
+            if let Some(territory_view) = territory_view {
+                match event.raw_slot {
+                    45 => pan_territory(&self.0, &server, &id, territory_view, 0, -1),
+                    46 => pan_territory(&self.0, &server, &id, territory_view, 0, 1),
+                    47 => pan_territory(&self.0, &server, &id, territory_view, -1, 0),
+                    48 => pan_territory(&self.0, &server, &id, territory_view, 1, 0),
+                    slot @ 0..=44 if territory_view.management => {
+                        if let Some(claim) = ui::territory_claim_for_slot(&territory_view, slot) {
+                            queue_territory_action(&self.0, &event.player, claim);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
         event
     }
 }
@@ -1946,6 +3060,11 @@ impl EventHandler<InventoryCloseEvent> for Close {
             .menus
             .lock()
             .unwrap_or_else(|e| e.into_inner())
+            .remove(&id);
+        self.0
+            .territory_views
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
             .remove(&id);
         if let Some(view) = self
             .0
@@ -1994,7 +3113,7 @@ struct Form(Arc<App>);
 impl EventHandler<BedrockFormResponseEvent> for Form {
     fn handle(
         &self,
-        _: Server,
+        server: Server,
         event: EventData<BedrockFormResponseEvent>,
     ) -> EventData<BedrockFormResponseEvent> {
         self.0
@@ -2002,6 +3121,33 @@ impl EventHandler<BedrockFormResponseEvent> for Form {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(&event.form_id);
+        let territory = self
+            .0
+            .territory_forms
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&event.form_id);
+        if let (Some(territory), Some(response)) = (territory, event.response_data.as_deref())
+            && let Ok(index) = response.trim_matches('"').parse::<usize>()
+            && let Some(action) = territory.actions.get(index).cloned()
+        {
+            match action {
+                TerritoryFormAction::Pan(dx, dz) => {
+                    pan_territory(
+                        &self.0,
+                        &server,
+                        &pid(&event.player),
+                        territory.view,
+                        dx,
+                        dz,
+                    );
+                }
+                TerritoryFormAction::Inspect(claim) if territory.view.management => {
+                    queue_territory_action(&self.0, &event.player, claim);
+                }
+                TerritoryFormAction::Inspect(_) => {}
+            }
+        }
         event
     }
 }

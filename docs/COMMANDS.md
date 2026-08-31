@@ -18,25 +18,29 @@
 - `/faction public` or `/faction private`
 - `/faction help [1|2|3]` — colored, sectioned command help.
 
-Leaders control ownership, transfers, and roles. Leaders and officers manage invitations, applications, claims, diplomacy, prisons, homes, and the bank.
+New and migrated factions must establish an active physical core before any recruitment path can add members. Leaders control ownership, transfers, and roles; all other actions follow the configured rank permission matrix.
 
 ## Economy and territory
 
 - `/faction bank [balance]`
 - `/faction bank deposit <amount>`
 - `/faction bank withdraw <amount>`
-- `/faction claim`
-- `/faction unclaim`
+- `/faction claim` — claim the current cardinal-adjacent chunk within core capacity.
+- `/faction unclaim` — release the current chunk only when territory remains connected to the core.
 - `/faction overclaim` — take the current enemy chunk only when its owner has more claims than power.
-- `/faction map` — show a compact five-by-five chunk map.
+- `/faction map` — open the read-only 9x5 territory map.
+- `/faction territory` — open the permission-gated territory management map.
+- `/faction territoryconfirm` or `/faction territorycancel` — resolve a short-lived UI selection.
 - `/faction sethome`
 - `/faction home`
-- `/faction setcore`
-- `/faction core`
+- `/faction setcore` — atomically place a beacon and grant the loaded, valid 3x3 starting territory.
+- `/faction core` — teleport to the active physical core.
 - `/faction setbanner` — copy the held item and all of its components as the faction banner.
 - `/faction upgrade <power|territory|vault|shield>`
 
-Core upgrades add maximum power, bonus claim capacity, trade capacity/reparation protection, or shield duration. Upgrade prices scale by level and are paid by the faction bank.
+Core upgrades add maximum power, strategic chunk capacity/lives, trade capacity/reparation protection, or shield duration. Upgrade prices scale by level and are paid by the faction bank.
+
+Java territory controls use the fixed bottom row `[↑][↓][←][→][BOOK][ ][ ][ ][ ]`. Blue is owned, cyan ally, yellow neutral/truce, red enemy, white wilderness, lime safe zone, red war zone, and black unknown/unloaded. Bedrock receives the equivalent native Form. Panning is bounded by configuration and every mutation is revalidated at commit time.
 
 ## Diplomacy, war, and POWs
 
@@ -52,7 +56,9 @@ Core upgrades add maximum power, bonus claim capacity, trade capacity/reparation
 - `/faction addarenaspawn <arena> <1|2>` — append a spawn to one side's group.
 - `/faction delarena <arena>`
 - `/faction arenas`
-- `/faction setzone <name> <safe|war>` — admin wizard: tap two opposite corners.
+- `/faction setzone <name> <safe|war>` — admin wizard: tap two opposite corners, then preview whole-chunk bounds and configured buffer.
+- `/faction convertzone <legacy-zone>` — preview conversion of a preserved block-coordinate zone to buffered whole chunks.
+- `/faction zoneconfirm` or `/faction zonecancel`
 - `/faction delzone <name>`
 - `/faction zones`
 
@@ -78,4 +84,4 @@ Registry keys, counts, and every Pumpkin item data component are persisted. This
 
 ## Zone and environmental rules
 
-Safe zones deny building, container use, PvP, explosions, fluids, pistons, and entity block grief. War zones allow PvP and building independently of faction claims. If zones overlap, safe zones take precedence.
+Safe zones deny building, container use, PvP, explosions, fluids, pistons, and entity block grief. War zones allow PvP and building independently of faction claims. New zones are whole-chunk rectangles with explicit buffers; legacy block-coordinate zones are preserved. If zones overlap, safe zones take precedence.

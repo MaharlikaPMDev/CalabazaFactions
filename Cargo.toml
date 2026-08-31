@@ -1,6 +1,6 @@
 [package]
 name = "calabaza-factions"
-version = "0.3.1"
+version = "0.4.0"
 edition = "2024"
 license = "MIT"
 description = "Hardcore faction and guild system for PumpkinMC"
@@ -10,7 +10,7 @@ repository = "https://github.com/MaharlikaPMDev/CalabazaFactions"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-pumpkin-plugin-api = { git = "https://github.com/Pumpkin-MC/Pumpkin", rev = "e393751b8d441fda01710f242f6e4c610ea3c193", package = "pumpkin-plugin-api" }
+pumpkin-plugin-api = { git = "https://github.com/Pumpkin-MC/Pumpkin", rev = "20c51d346e33f1f485f401b6d159a9f0881ec1af", package = "pumpkin-plugin-api" }
 tracing = "0.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

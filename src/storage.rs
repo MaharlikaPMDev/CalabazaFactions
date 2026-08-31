@@ -61,7 +61,22 @@ pub fn save(data_dir: &Path, state: &FactionState) -> Result<(), String> {
     let bytes = serde_json::to_vec_pretty(state).map_err(|e| e.to_string())?;
     fs::write(&temp, bytes).map_err(|e| e.to_string())?;
     replace_with_backup(&temp, &target, &backup)?;
-    let public = serde_json::json!({"schema_version":state.schema_version,"player_faction":state.player_faction,"factions":state.factions.iter().map(|(id,f)|(id.clone(),serde_json::json!({"name":f.name,"members":f.members,"power":f.power,"bank":f.bank}))).collect::<serde_json::Map<_,_>>()});
+    let public = serde_json::json!({
+        "schema_version": state.schema_version,
+        "player_faction": state.player_faction,
+        "factions": state.factions.iter().map(|(id, faction)| (
+            id.clone(),
+            serde_json::json!({
+                "name": faction.name,
+                "members": faction.members,
+                "power": faction.power,
+                "bank": faction.bank,
+                "core_lifecycle": faction.core_lifecycle,
+                "physical_core": faction.physical_core,
+                "claims": faction.claims,
+            })
+        )).collect::<serde_json::Map<_, _>>()
+    });
     let api_target = data_dir.join("api.json");
     let api_temp = data_dir.join("api.json.tmp");
     let api_backup = data_dir.join("api.json.bak");

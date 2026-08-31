@@ -1,4 +1,8 @@
-use crate::{config::Config, domain::*, storage};
+use crate::{
+    config::{Config, EconomyMode},
+    domain::*,
+    storage,
+};
 use pumpkin_plugin_api::{Player, Server, inventory::Inventory};
 use std::{
     collections::{HashMap, HashSet},
@@ -24,6 +28,35 @@ pub struct ZoneSetup {
     pub id: String,
     pub kind: ZoneKind,
     pub first: Option<Location>,
+    pub second: Option<Location>,
+}
+
+#[derive(Clone, Debug)]
+pub struct TerritoryView {
+    pub origin: Claim,
+    pub offset_x: i32,
+    pub offset_z: i32,
+    pub management: bool,
+    pub last_refresh_at: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct TerritoryFormView {
+    pub view: TerritoryView,
+    pub actions: Vec<TerritoryFormAction>,
+}
+
+#[derive(Clone, Debug)]
+pub enum TerritoryFormAction {
+    Pan(i32, i32),
+    Inspect(Claim),
+}
+
+#[derive(Clone, Debug)]
+pub struct PendingTerritoryAction {
+    pub claim: Claim,
+    pub action: String,
+    pub expires_at: u64,
 }
 
 pub enum TradeView {
@@ -41,12 +74,18 @@ pub struct App {
     pub config: Config,
     pub state: Mutex<FactionState>,
     pub forms: Mutex<HashMap<u32, String>>,
+    pub territory_forms: Mutex<HashMap<u32, TerritoryFormView>>,
     pub menus: Mutex<HashMap<String, String>>,
+    pub territory_views: Mutex<HashMap<String, TerritoryView>>,
+    pub pending_territory: Mutex<HashMap<String, PendingTerritoryAction>>,
     pub trades: Mutex<HashMap<String, TradeView>>,
     pub arena_setup: Mutex<HashMap<String, ArenaSetup>>,
     pub zone_setup: Mutex<HashMap<String, ZoneSetup>>,
     pub last_hits: Mutex<HashMap<i32, (String, u64)>>,
     pub scoreboards: Mutex<HashSet<String>>,
+    pub ipc_subscribers: Mutex<HashMap<String, HashSet<String>>>,
+    pub delivered_event_sequence: Mutex<u64>,
+    pub reconcile_cursor: Mutex<usize>,
 }
 
 impl App {
@@ -58,12 +97,18 @@ impl App {
             config,
             state: Mutex::new(state),
             forms: Mutex::new(HashMap::new()),
+            territory_forms: Mutex::new(HashMap::new()),
             menus: Mutex::new(HashMap::new()),
+            territory_views: Mutex::new(HashMap::new()),
+            pending_territory: Mutex::new(HashMap::new()),
             trades: Mutex::new(HashMap::new()),
             arena_setup: Mutex::new(HashMap::new()),
             zone_setup: Mutex::new(HashMap::new()),
             last_hits: Mutex::new(HashMap::new()),
             scoreboards: Mutex::new(HashSet::new()),
+            ipc_subscribers: Mutex::new(HashMap::new()),
+            delivered_event_sequence: Mutex::new(0),
+            reconcile_cursor: Mutex::new(0),
         })
     }
     pub fn now() -> u64 {
@@ -79,9 +124,11 @@ impl App {
         let id = Self::player_id(p);
         let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
         s.player_names.insert(id.clone(), p.get_name());
-        s.wallets
-            .entry(id)
-            .or_insert(self.config.economy.starting_wallet);
+        if self.config.economy.mode == EconomyMode::Standalone {
+            s.wallets
+                .entry(id)
+                .or_insert(self.config.economy.starting_wallet);
+        }
     }
     pub fn mutate<T>(
         &self,
@@ -117,6 +164,11 @@ impl App {
                 mailbox.drain(0..excess);
             }
         }
+        candidate.retain_events(
+            Self::now(),
+            self.config.ipc.event_retention_count,
+            self.config.ipc.event_retention_seconds,
+        );
         storage::save(&self.data_dir, &candidate)?;
         *state = candidate;
         Ok(out)
@@ -202,6 +254,88 @@ impl App {
         self.config.storage.trade_slots
             + usize::from(faction.upgrade_level(UpgradeKind::Vault))
                 * self.config.cores.trade_slots_per_level
+    }
+
+    pub fn core_level(&self, faction: &Faction) -> u8 {
+        faction.core_level()
+    }
+
+    pub fn core_max_lives(&self, faction: &Faction) -> u32 {
+        self.config.cores.starting_lives.saturating_add(
+            u32::from(self.core_level(faction).saturating_sub(1))
+                .saturating_mul(self.config.cores.lives_per_level),
+        )
+    }
+
+    pub fn core_claim_capacity(&self, faction: &Faction) -> usize {
+        self.config.cores.base_claim_capacity.max(9).saturating_add(
+            usize::from(self.core_level(faction).saturating_sub(1))
+                .saturating_mul(self.config.cores.claims_per_level),
+        )
+    }
+
+    pub fn initial_core_claims(core: &BlockLocation) -> Vec<Claim> {
+        let center = core.claim();
+        let mut claims = Vec::with_capacity(9);
+        for dz in -1..=1 {
+            for dx in -1..=1 {
+                claims.push(Claim {
+                    world: center.world.clone(),
+                    chunk_x: center.chunk_x + dx,
+                    chunk_z: center.chunk_z + dz,
+                });
+            }
+        }
+        claims
+    }
+
+    pub fn core_at(&self, world: &str, x: i32, y: i32, z: i32) -> Option<(String, PhysicalCore)> {
+        let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let claim = Claim {
+            world: world.into(),
+            chunk_x: x.div_euclid(16),
+            chunk_z: z.div_euclid(16),
+        };
+        let id = state.core_owners.get(&claim.key())?;
+        let core = state.factions.get(id)?.physical_core.as_ref()?;
+        (core.location.x == x && core.location.y == y && core.location.z == z)
+            .then(|| (id.clone(), core.clone()))
+    }
+
+    pub fn core_clearance_owner(&self, world: &str, x: i32, y: i32, z: i32) -> Option<String> {
+        let radius = self.config.cores.clearance_radius.max(0);
+        let height = self.config.cores.clearance_height.max(0);
+        let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let chunk_radius = radius.div_euclid(16) + 1;
+        let center_x = x.div_euclid(16);
+        let center_z = z.div_euclid(16);
+        for dz in -chunk_radius..=chunk_radius {
+            for dx in -chunk_radius..=chunk_radius {
+                let claim = Claim {
+                    world: world.into(),
+                    chunk_x: center_x + dx,
+                    chunk_z: center_z + dz,
+                };
+                let Some(id) = state.core_owners.get(&claim.key()) else {
+                    continue;
+                };
+                let Some(core) = state
+                    .factions
+                    .get(id)
+                    .and_then(|faction| faction.physical_core.as_ref())
+                else {
+                    continue;
+                };
+                if (x - core.location.x).abs() <= radius
+                    && (z - core.location.z).abs() <= radius
+                    && y >= core.location.y
+                    && y <= core.location.y + height
+                {
+                    return Some(id.clone());
+                }
+            }
+        }
+        None
     }
     pub fn war_notice(&self, id: &str) -> Option<String> {
         let s = self.state.lock().unwrap_or_else(|e| e.into_inner());
