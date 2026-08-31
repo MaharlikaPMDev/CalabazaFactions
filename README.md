@@ -100,12 +100,7 @@ After the initial 3x3, each new chunk is selected separately. It must share a no
 - `/faction territory` opens management for ranks with territory permission.
 - `/faction claim`, `/faction overclaim`, and `/faction unclaim` operate on the current chunk through the same domain rules.
 
-Java uses a 9x5 pane map. The player head marks the viewer's current chunk while preserving ownership details. The fixed bottom row is:
-
-```text
-[ ↑ ][ ↓ ][ ← ][ → ][ BOOK ][   ][   ][   ][   ]
-```
-
+Java uses a 9x5 pane map. The player head marks the viewer's current chunk while preserving ownership details.
 The arrows pan within the configured limit. The book contains faction/core capacity and this legend:
 
 - blue: owned territory
