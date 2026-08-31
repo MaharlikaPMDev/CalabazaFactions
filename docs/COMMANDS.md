@@ -40,7 +40,7 @@ New and migrated factions must establish an active physical core before any recr
 
 Core upgrades add maximum power, strategic chunk capacity/lives, trade capacity/reparation protection, or shield duration. Upgrade prices scale by level and are paid by the faction bank.
 
-Java territory controls use the fixed bottom row `[↑][↓][←][→][BOOK][ ][ ][ ][ ]`. Blue is owned, cyan ally, yellow neutral/truce, red enemy, white wilderness, lime safe zone, red war zone, and black unknown/unloaded. Bedrock receives the equivalent native Form. Panning is bounded by configuration and every mutation is revalidated at commit time.
+Java territory controls use `[↑][↓][←][→][BOOK][RECENTER][REFRESH][CORE STATUS][VIEW/MANAGE]`. Blue is owned, cyan ally, yellow neutral/truce, red enemy, white wilderness, lime safe zone, red war zone, and black unknown/unloaded. Bedrock receives equivalent native Form controls. All UI intents are deferred out of Pumpkin's click/Form callback, panning is bounded by configuration, and every mutation is revalidated at commit time.
 
 ## Diplomacy, war, and POWs
 

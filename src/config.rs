@@ -88,8 +88,8 @@ pub struct CoreConfig {
     pub starting_lives: u32,
     pub lives_per_level: u32,
     pub base_claim_capacity: usize,
-    pub clearance_radius: i32,
-    pub clearance_height: i32,
+    #[serde(default = "default_clearance_outward_blocks")]
+    pub clearance_outward_blocks: i32,
     pub hit_cooldown_seconds: u64,
     pub replacement_cooldown_seconds: u64,
     pub replacement_cost: i64,
@@ -291,8 +291,7 @@ impl Default for CoreConfig {
             starting_lives: 10,
             lives_per_level: 5,
             base_claim_capacity: 9,
-            clearance_radius: 2,
-            clearance_height: 5,
+            clearance_outward_blocks: default_clearance_outward_blocks(),
             hit_cooldown_seconds: 3,
             replacement_cooldown_seconds: 3600,
             replacement_cost: 0,
@@ -302,6 +301,10 @@ impl Default for CoreConfig {
             max_claim_distance_from_core: 0,
         }
     }
+}
+
+fn default_clearance_outward_blocks() -> i32 {
+    4
 }
 
 impl Default for TerritoryUiConfig {

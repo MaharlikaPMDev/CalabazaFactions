@@ -37,6 +37,6 @@ Classic Factions systems commonly combine chunk claims, faction/member power, ov
 - A faction has no active recruitment or expansion until it establishes a physical beacon core. Level one grants a centered 3x3, and later chunks are cardinal-adjacent choices constrained by core capacity.
 - Core break attempts are event-authoritative attacks. Reconciliation is bounded, skips unloaded chunks, restores only, and never deducts lives.
 - Zero core lives clears indexed active claims but preserves faction identity and a recoverable claim snapshot.
-- Java territory uses a 9x5 pane grid plus `[↑][↓][←][→][BOOK][ ][ ][ ][ ]`; Bedrock uses native Forms. Both route mutations through the same commit-time domain checks.
+- Java territory uses a 9x5 pane grid plus `[↑][↓][←][→][BOOK][RECENTER][REFRESH][CORE STATUS][VIEW/MANAGE]`; Bedrock uses native Forms. Callbacks only enqueue bounded intents, and both editions route mutations through the same commit-time domain checks.
 - New server zones are whole-chunk rectangles with explicit buffers. Legacy regions remain unchanged until an administrator previews and confirms conversion.
 - Cross-plugin events use a persistent monotonic journal and versioned Pumpkin IPC. Global player money can be delegated to the versioned CalabazaBank contract; faction-bank state remains local.

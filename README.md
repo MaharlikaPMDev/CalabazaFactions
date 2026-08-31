@@ -2,7 +2,7 @@
 
 CalabazaFactions is a hardcore factions and guild-warfare plugin for [PumpkinMC](https://github.com/Pumpkin-MC/Pumpkin), written in Rust and distributed as a WASI Preview 2 WebAssembly component.
 
-The current release is **v0.4.0**. It targets Pumpkin commit `20c51d346e33f1f485f401b6d159a9f0881ec1af` and the current v0.1 plugin ABI.
+The current release is **v0.4.1**. It targets Pumpkin commit `c01ddb7b65b0be9641eb2273740ce8e1a04b7807` and the current v0.1 plugin ABI.
 
 ## Highlights
 
@@ -20,7 +20,7 @@ The current release is **v0.4.0**. It targets Pumpkin commit `20c51d346e33f1f485
 3. Place the WASM file in Pumpkin's `plugins` directory.
 4. Start Pumpkin. Configuration and state are created under `plugins/data/CalabazaFactions/`.
 
-Pumpkin's WASM ABI is evolving. v0.4.0 is pinned to the commit above so the exported `handle-event` signature matches the server API used to build the artifact.
+Pumpkin's WASM ABI is evolving. v0.4.1 is pinned to the commit above so the exported `handle-event` signature matches the server API used to build the artifact.
 
 ## First server setup
 
@@ -28,7 +28,7 @@ Review `plugins/data/CalabazaFactions/config.toml` after first startup. The bund
 
 Important settings include:
 
-- `[cores]`: lives, claim capacity, clearance, hit/replacement cooldowns and cost, reconciliation batch size, enemy-core spacing, and an optional anti-corridor distance cap (`0` disables the cap).
+- `[cores]`: lives, claim capacity, `clearance_outward_blocks` (four by default), hit/replacement cooldowns and cost, reconciliation batch size, enemy-core spacing, and an optional anti-corridor distance cap (`0` disables the cap).
 - `[territory_ui]`: maximum map pan distance, five chunks by default.
 - `[zones]`: explicit safe-zone and war-zone chunk buffers.
 - `[economy]`: `standalone` or `external`; the external provider defaults to `CalabazaBank`.
@@ -81,7 +81,7 @@ Use `/faction help [1|2|3]` for colored, sectioned in-game help and [`docs/COMMA
 
 ## Physical core rules
 
-A level-one core starts with 10 lives by default. Blocks cannot be placed in its configured clearance volume. Claim and environmental handlers protect the beacon; a bounded scheduler only repairs unexpectedly missing beacons in already loaded chunks and never deals damage.
+A level-one core starts with 10 lives by default. Core placement requires free space from the beacon through four configurable blocks horizontally and upward; blocks below the beacon are exempt. Block names `air`, `cave_air`, and `void_air` are accepted case-insensitively with or without Pumpkin's namespace. Claim and environmental handlers protect the beacon; a bounded scheduler only repairs unexpectedly missing beacons in already loaded chunks and never deals damage.
 
 A valid enemy break attempt is cancelled and counts as one hit after the global core-hit cooldown. At zero lives:
 
@@ -101,6 +101,7 @@ After the initial 3x3, each new chunk is selected separately. It must share a no
 - `/faction claim`, `/faction overclaim`, and `/faction unclaim` operate on the current chunk through the same domain rules.
 
 Java uses a 9x5 pane map. The player head marks the viewer's current chunk while preserving ownership details.
+The bottom row is `[↑][↓][←][→][BOOK][RECENTER][REFRESH][CORE STATUS][VIEW/MANAGE]`. Every action is queued and processed outside Pumpkin's inventory callback.
 The arrows pan within the configured limit. The book contains faction/core capacity and this legend:
 
 - blue: owned territory

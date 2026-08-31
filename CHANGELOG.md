@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.1
+
+- Built against Pumpkin commit `c01ddb7b65b0be9641eb2273740ce8e1a04b7807`.
+- Fixed `/faction setcore` rejecting Pumpkin block names such as `Air`; air, cave air, and void air now match case-insensitively with or without a namespace.
+- Replaced separate clearance radius/height settings with `clearance_outward_blocks = 4`, covering four blocks horizontally and upward from the beacon while leaving the support area below exempt.
+- Removed all host/UI work from inventory and Bedrock Form callbacks. Callbacks now only cancel and enqueue bounded intents for a pre-registered tick task, preventing GUI-close freezes.
+- Filled territory slots 50–53 with Recenter, Refresh, Core Status, and View/Management Toggle controls on Java and equivalent Bedrock Form actions.
+
 ## 0.4.0
 
 - Replaced logical cores with atomic physical beacon cores, a 3x3 initial territory, configurable lives and hit cooldowns, enemy-hit damage, destruction snapshots, claim teardown, replacement cooldowns, and loaded-chunk-only reconciliation.

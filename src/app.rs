@@ -5,7 +5,7 @@ use crate::{
 };
 use pumpkin_plugin_api::{Player, Server, inventory::Inventory};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     path::PathBuf,
     sync::Mutex,
     time::{SystemTime, UNIX_EPOCH},
@@ -50,6 +50,10 @@ pub struct TerritoryFormView {
 pub enum TerritoryFormAction {
     Pan(i32, i32),
     Inspect(Claim),
+    Recenter,
+    Refresh,
+    Status,
+    ToggleManagement,
 }
 
 #[derive(Clone, Debug)]
@@ -77,6 +81,8 @@ pub struct App {
     pub territory_forms: Mutex<HashMap<u32, TerritoryFormView>>,
     pub menus: Mutex<HashMap<String, String>>,
     pub territory_views: Mutex<HashMap<String, TerritoryView>>,
+    pub territory_intents: Mutex<VecDeque<(String, TerritoryFormAction)>>,
+    pub territory_reopening: Mutex<HashSet<String>>,
     pub pending_territory: Mutex<HashMap<String, PendingTerritoryAction>>,
     pub trades: Mutex<HashMap<String, TradeView>>,
     pub arena_setup: Mutex<HashMap<String, ArenaSetup>>,
@@ -100,6 +106,8 @@ impl App {
             territory_forms: Mutex::new(HashMap::new()),
             menus: Mutex::new(HashMap::new()),
             territory_views: Mutex::new(HashMap::new()),
+            territory_intents: Mutex::new(VecDeque::new()),
+            territory_reopening: Mutex::new(HashSet::new()),
             pending_territory: Mutex::new(HashMap::new()),
             trades: Mutex::new(HashMap::new()),
             arena_setup: Mutex::new(HashMap::new()),
@@ -119,6 +127,15 @@ impl App {
     }
     pub fn player_id(player: &Player) -> String {
         player.get_id().to_string()
+    }
+    pub fn enqueue_territory_intent(&self, player_id: String, action: TerritoryFormAction) {
+        let mut queue = self
+            .territory_intents
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if queue.len() < 256 && !queue.iter().any(|(queued, _)| queued == &player_id) {
+            queue.push_back((player_id, action));
+        }
     }
     pub fn remember_player(&self, p: &Player) {
         let id = Self::player_id(p);
@@ -303,8 +320,8 @@ impl App {
     }
 
     pub fn core_clearance_owner(&self, world: &str, x: i32, y: i32, z: i32) -> Option<String> {
-        let radius = self.config.cores.clearance_radius.max(0);
-        let height = self.config.cores.clearance_height.max(0);
+        let radius = self.config.cores.clearance_outward_blocks.max(0);
+        let height = radius;
         let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         let chunk_radius = radius.div_euclid(16) + 1;
         let center_x = x.div_euclid(16);

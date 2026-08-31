@@ -345,6 +345,10 @@ pub fn open_territory(app: &App, player: &Player, view: TerritoryView) -> Result
             TerritoryFormAction::Pan(0, 1),
             TerritoryFormAction::Pan(-1, 0),
             TerritoryFormAction::Pan(1, 0),
+            TerritoryFormAction::Recenter,
+            TerritoryFormAction::Refresh,
+            TerritoryFormAction::Status,
+            TerritoryFormAction::ToggleManagement,
         ];
         let mut actionable = Vec::new();
         for slot in 0i16..45 {
@@ -384,7 +388,18 @@ pub fn open_territory(app: &App, player: &Player, view: TerritoryView) -> Result
         .button(TextComponent::text("↑ North"), None)
         .button(TextComponent::text("↓ South"), None)
         .button(TextComponent::text("← West"), None)
-        .button(TextComponent::text("→ East"), None);
+        .button(TextComponent::text("→ East"), None)
+        .button(TextComponent::text("⌖ Recenter"), None)
+        .button(TextComponent::text("↻ Refresh"), None)
+        .button(TextComponent::text("Core Status"), None)
+        .button(
+            TextComponent::text(if management {
+                "Switch to View Only"
+            } else {
+                "Switch to Management"
+            }),
+            None,
+        );
         for (claim, label) in actionable.into_iter().take(20) {
             form = form.button(
                 TextComponent::text(&format!("{label}\n{}, {}", claim.chunk_x, claim.chunk_z)),
@@ -393,16 +408,21 @@ pub fn open_territory(app: &App, player: &Player, view: TerritoryView) -> Result
             actions.push(TerritoryFormAction::Inspect(claim));
         }
         let form_id = bedrock.open_form(form.build());
+        let stored_view = TerritoryView { management, ..view };
         app.territory_forms
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .insert(
                 form_id,
                 TerritoryFormView {
-                    view: TerritoryView { management, ..view },
+                    view: stored_view.clone(),
                     actions,
                 },
             );
+        app.territory_views
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(player_id, stored_view);
         return Ok(());
     }
 
@@ -468,7 +488,48 @@ pub fn open_territory(app: &App, player: &Player, view: TerritoryView) -> Result
             ],
         ),
     );
+    gui.set_item(
+        50,
+        item(
+            "minecraft:compass",
+            "Recenter Map",
+            vec!["Return the map to your current chunk.".into()],
+        ),
+    );
+    gui.set_item(
+        51,
+        item(
+            "minecraft:clock",
+            "Refresh Map",
+            vec!["Reload ownership, relations, zones, and status.".into()],
+        ),
+    );
+    gui.set_item(
+        52,
+        item(
+            "minecraft:beacon",
+            "Core Status",
+            vec!["Show core level, lives, clearance, and claim capacity.".into()],
+        ),
+    );
+    gui.set_item(
+        53,
+        item(
+            "minecraft:redstone_torch",
+            if management {
+                "Switch to View Only"
+            } else {
+                "Switch to Management"
+            },
+            vec![if management {
+                "Disable territory action prompts.".into()
+            } else {
+                "Requires territory permission.".into()
+            }],
+        ),
+    );
     drop(state);
+    player.open_gui(gui);
     app.menus
         .lock()
         .unwrap_or_else(|error| error.into_inner())
@@ -477,7 +538,6 @@ pub fn open_territory(app: &App, player: &Player, view: TerritoryView) -> Result
         .lock()
         .unwrap_or_else(|error| error.into_inner())
         .insert(player_id, TerritoryView { management, ..view });
-    player.open_gui(gui);
     Ok(())
 }
 

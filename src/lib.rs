@@ -107,6 +107,10 @@ impl Plugin for CalabazaFactions {
             app.config.ipc.delivery_interval_ticks.max(1),
             move |_server| deliver_ipc_events(&delivery_app),
         );
+        let territory_app = app.clone();
+        context.schedule_repeating_task(1, 1, move |server| {
+            process_territory_intents(&territory_app, &server)
+        });
         if config::EconomyMode::External == app.config.economy.mode
             && let Err(error) = economy::health(&app.config.economy)
         {
@@ -1216,8 +1220,8 @@ fn set_core(
         (faction_id, app.core_max_lives(faction), replacement_cost)
     };
 
-    let radius = app.config.cores.clearance_radius.max(0);
-    let height = app.config.cores.clearance_height.max(0);
+    let radius = app.config.cores.clearance_outward_blocks.max(0);
+    let height = radius;
     for dy in 0..=height {
         for dz in -radius..=radius {
             for dx in -radius..=radius {
@@ -1227,10 +1231,7 @@ fn set_core(
                     z: location.z + dz,
                 };
                 let block = player.get_world().get_block(pos);
-                if !matches!(
-                    block.name.as_str(),
-                    "minecraft:air" | "minecraft:cave_air" | "minecraft:void_air"
-                ) {
+                if !is_air_block_name(&block.name) {
                     return Err(format!(
                         "core clearance is blocked at {}, {}, {} by {}",
                         pos.x, pos.y, pos.z, block.name
@@ -1283,6 +1284,14 @@ fn set_core(
             String::new()
         }
     ))
+}
+
+fn is_air_block_name(name: &str) -> bool {
+    name.rsplit(':').next().is_some_and(|name| {
+        name.eq_ignore_ascii_case("air")
+            || name.eq_ignore_ascii_case("cave_air")
+            || name.eq_ignore_ascii_case("void_air")
+    })
 }
 
 fn teleport_to_core(
@@ -2299,6 +2308,16 @@ impl EventHandler<PlayerLeaveEvent> for Leave {
             .unwrap_or_else(|error| error.into_inner())
             .remove(&id);
         self.0
+            .territory_intents
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .retain(|(player_id, _)| player_id != &id);
+        self.0
+            .territory_reopening
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&id);
+        self.0
             .pending_territory
             .lock()
             .unwrap_or_else(|error| error.into_inner())
@@ -2956,58 +2975,153 @@ fn queue_territory_action(app: &App, player: &pumpkin_plugin_api::Player, claim:
     }
 }
 
-fn pan_territory(
+fn reopen_territory(
     app: &Arc<App>,
     server: &Server,
-    player_id: &str,
-    mut view: TerritoryView,
-    dx: i32,
-    dz: i32,
+    player: &pumpkin_plugin_api::Player,
+    view: TerritoryView,
 ) {
-    let now = App::now();
-    if now
-        < view
-            .last_refresh_at
-            .saturating_add(app.config.territory_ui.refresh_cooldown_seconds)
-    {
-        let player_id = player_id.to_string();
-        server.schedule_delayed_task(1, move |server| {
-            if let Some(player) = server
-                .get_all_players()
-                .into_iter()
-                .find(|player| pid(player) == player_id)
-            {
-                player.send_system_message(
-                    TextComponent::text("Please wait before panning the territory map again."),
-                    false,
-                );
-            }
-        });
-        return;
+    let player_id = pid(player);
+    app.territory_reopening
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .insert(player_id.clone());
+    if let Err(error) = ui::open_territory(app, player, view) {
+        player.send_system_message(TextComponent::text(&error), false);
     }
-    let limit = app.config.territory_ui.max_pan_steps.max(0);
-    view.offset_x = (view.offset_x + dx).clamp(-limit, limit);
-    view.offset_z = (view.offset_z + dz).clamp(-limit, limit);
-    view.last_refresh_at = now;
     let app = app.clone();
-    let player_id = player_id.to_string();
-    server.schedule_delayed_task(1, move |server| {
-        if let Some(player) = server
+    server.schedule_delayed_task(2, move |_server| {
+        app.territory_reopening
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&player_id);
+    });
+}
+
+fn process_territory_intents(app: &Arc<App>, server: &Server) {
+    let intents = {
+        let mut queue = app
+            .territory_intents
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        (0..64)
+            .filter_map(|_| queue.pop_front())
+            .collect::<Vec<_>>()
+    };
+    for (player_id, action) in intents {
+        let Some(player) = server
             .get_all_players()
             .into_iter()
             .find(|player| pid(player) == player_id)
-            && let Err(error) = ui::open_territory(&app, &player, view.clone())
-        {
-            player.send_system_message(TextComponent::text(&error), false);
+        else {
+            continue;
+        };
+        match action {
+            TerritoryFormAction::Inspect(claim) => queue_territory_action(app, &player, claim),
+            TerritoryFormAction::Status => {
+                let message = {
+                    let state = app.state.lock().unwrap_or_else(|error| error.into_inner());
+                    state.faction_of(&player_id).map_or_else(
+                        || "You do not belong to a faction.".into(),
+                        |faction| {
+                            let lives = faction
+                                .physical_core
+                                .as_ref()
+                                .map_or_else(|| "none".into(), |core| format!("{}/{}", core.lives, core.max_lives));
+                            format!(
+                                "{} • Core {:?} level {} • Lives {} • Claims {}/{} • Clearance {} blocks outward",
+                                faction.name,
+                                faction.core_lifecycle,
+                                app.core_level(faction),
+                                lives,
+                                faction.claims.len(),
+                                app.core_claim_capacity(faction),
+                                app.config.cores.clearance_outward_blocks.max(0)
+                            )
+                        },
+                    )
+                };
+                player.send_system_message(TextComponent::text(&message), false);
+            }
+            TerritoryFormAction::Pan(dx, dz) => {
+                let Some(mut view) = app
+                    .territory_views
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .get(&player_id)
+                    .cloned()
+                else {
+                    continue;
+                };
+                let now = App::now();
+                if now
+                    < view
+                        .last_refresh_at
+                        .saturating_add(app.config.territory_ui.refresh_cooldown_seconds)
+                {
+                    player.send_system_message(
+                        TextComponent::text("Please wait before panning the territory map again."),
+                        false,
+                    );
+                    continue;
+                }
+                let limit = app.config.territory_ui.max_pan_steps.max(0);
+                view.offset_x = (view.offset_x + dx).clamp(-limit, limit);
+                view.offset_z = (view.offset_z + dz).clamp(-limit, limit);
+                view.last_refresh_at = now;
+                reopen_territory(app, server, &player, view);
+            }
+            action @ (TerritoryFormAction::Recenter | TerritoryFormAction::Refresh) => {
+                let Some(mut view) = app
+                    .territory_views
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .get(&player_id)
+                    .cloned()
+                else {
+                    continue;
+                };
+                if matches!(action, TerritoryFormAction::Recenter) {
+                    view.origin = App::claim_at(&player);
+                    view.offset_x = 0;
+                    view.offset_z = 0;
+                }
+                view.last_refresh_at = App::now();
+                reopen_territory(app, server, &player, view);
+            }
+            TerritoryFormAction::ToggleManagement => {
+                let Some(mut view) = app
+                    .territory_views
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .get(&player_id)
+                    .cloned()
+                else {
+                    continue;
+                };
+                if !view.management {
+                    let permission = {
+                        let state = app.state.lock().unwrap_or_else(|error| error.into_inner());
+                        require_permission(app, &state, &player_id, RankPermission::Territory)
+                    };
+                    if let Err(error) = permission {
+                        player.send_system_message(TextComponent::text(&error), false);
+                        continue;
+                    }
+                }
+                view.management = !view.management;
+                view.last_refresh_at = App::now();
+                reopen_territory(app, server, &player, view);
+            }
         }
-    });
+    }
 }
 
 struct Click(Arc<App>);
 impl EventHandler<InventoryClickEvent> for Click {
     fn handle(
         &self,
-        server: Server,
+        _: Server,
         mut event: EventData<InventoryClickEvent>,
     ) -> EventData<InventoryClickEvent> {
         let id = pid(&event.player);
@@ -3031,17 +3145,23 @@ impl EventHandler<InventoryClickEvent> for Click {
                 .get(&id)
                 .cloned();
             if let Some(territory_view) = territory_view {
-                match event.raw_slot {
-                    45 => pan_territory(&self.0, &server, &id, territory_view, 0, -1),
-                    46 => pan_territory(&self.0, &server, &id, territory_view, 0, 1),
-                    47 => pan_territory(&self.0, &server, &id, territory_view, -1, 0),
-                    48 => pan_territory(&self.0, &server, &id, territory_view, 1, 0),
+                let action = match event.raw_slot {
+                    45 => Some(TerritoryFormAction::Pan(0, -1)),
+                    46 => Some(TerritoryFormAction::Pan(0, 1)),
+                    47 => Some(TerritoryFormAction::Pan(-1, 0)),
+                    48 => Some(TerritoryFormAction::Pan(1, 0)),
+                    50 => Some(TerritoryFormAction::Recenter),
+                    51 => Some(TerritoryFormAction::Refresh),
+                    52 => Some(TerritoryFormAction::Status),
+                    53 => Some(TerritoryFormAction::ToggleManagement),
                     slot @ 0..=44 if territory_view.management => {
-                        if let Some(claim) = ui::territory_claim_for_slot(&territory_view, slot) {
-                            queue_territory_action(&self.0, &event.player, claim);
-                        }
+                        ui::territory_claim_for_slot(&territory_view, slot)
+                            .map(TerritoryFormAction::Inspect)
                     }
-                    _ => {}
+                    _ => None,
+                };
+                if let Some(action) = action {
+                    self.0.enqueue_territory_intent(id, action);
                 }
             }
         }
@@ -3056,16 +3176,24 @@ impl EventHandler<InventoryCloseEvent> for Close {
         event: EventData<InventoryCloseEvent>,
     ) -> EventData<InventoryCloseEvent> {
         let id = pid(&event.player);
-        self.0
-            .menus
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&id);
-        self.0
-            .territory_views
+        let reopening = self
+            .0
+            .territory_reopening
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .remove(&id);
+        if !reopening {
+            self.0
+                .menus
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&id);
+            self.0
+                .territory_views
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .remove(&id);
+        }
         if let Some(view) = self
             .0
             .trades
@@ -3113,7 +3241,7 @@ struct Form(Arc<App>);
 impl EventHandler<BedrockFormResponseEvent> for Form {
     fn handle(
         &self,
-        server: Server,
+        _: Server,
         event: EventData<BedrockFormResponseEvent>,
     ) -> EventData<BedrockFormResponseEvent> {
         self.0
@@ -3130,23 +3258,9 @@ impl EventHandler<BedrockFormResponseEvent> for Form {
         if let (Some(territory), Some(response)) = (territory, event.response_data.as_deref())
             && let Ok(index) = response.trim_matches('"').parse::<usize>()
             && let Some(action) = territory.actions.get(index).cloned()
+            && (!matches!(&action, TerritoryFormAction::Inspect(_)) || territory.view.management)
         {
-            match action {
-                TerritoryFormAction::Pan(dx, dz) => {
-                    pan_territory(
-                        &self.0,
-                        &server,
-                        &pid(&event.player),
-                        territory.view,
-                        dx,
-                        dz,
-                    );
-                }
-                TerritoryFormAction::Inspect(claim) if territory.view.management => {
-                    queue_territory_action(&self.0, &event.player, claim);
-                }
-                TerritoryFormAction::Inspect(_) => {}
-            }
+            self.0.enqueue_territory_intent(pid(&event.player), action);
         }
         event
     }
@@ -3167,6 +3281,26 @@ mod integration_tests {
         assert_eq!(c.war.preparation_hours, 12);
         assert_eq!(c.war.battle_minutes, 30);
         assert_eq!(c.war.prisoner_hours, 24);
+    }
+    #[test]
+    fn core_clearance_defaults_to_four_blocks_outward() {
+        assert_eq!(config::Config::default().cores.clearance_outward_blocks, 4);
+        let migrated: config::Config =
+            toml::from_str("[cores]\nclearance_radius = 2\nclearance_height = 5\n").unwrap();
+        assert_eq!(migrated.cores.clearance_outward_blocks, 4);
+    }
+    #[test]
+    fn pumpkin_air_names_are_accepted_case_insensitively() {
+        for name in [
+            "Air",
+            "air",
+            "minecraft:air",
+            "CAVE_AIR",
+            "minecraft:void_air",
+        ] {
+            assert!(is_air_block_name(name), "{name} should be treated as air");
+        }
+        assert!(!is_air_block_name("minecraft:stone"));
     }
     #[test]
     fn paid_war_settlement_releases_prisoners() {
