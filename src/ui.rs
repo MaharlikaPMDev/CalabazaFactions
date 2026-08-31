@@ -542,6 +542,9 @@ pub fn open_territory(app: &App, player: &Player, view: TerritoryView) -> Result
 }
 
 pub fn update_scoreboard(app: &App, player: &Player) {
+    if !app.config.scoreboard.enabled {
+        return;
+    }
     let pid = App::player_id(player);
     let state = app.state.lock().unwrap_or_else(|e| e.into_inner());
     let Some(faction) = state.faction_of(&pid) else {

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.3
+
+- Added `[scoreboard].enabled` so servers can disable the built-in faction sidebar when using CalabazaBoard or another scoreboard plugin.
+
 ## 0.4.2
 
 - Changed arena spawn and server-zone coordinate selection from block interaction to cancelled block-break events, preventing one right-click from recording both setup positions.

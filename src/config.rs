@@ -10,9 +10,22 @@ pub struct Config {
     pub protection: ProtectionConfig,
     pub cores: CoreConfig,
     pub territory_ui: TerritoryUiConfig,
+    pub scoreboard: ScoreboardConfig,
     pub zones: ZoneConfig,
     pub ipc: IpcConfig,
     pub ranks: RankConfig,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ScoreboardConfig {
+    pub enabled: bool,
+}
+
+impl Default for ScoreboardConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -31,6 +31,7 @@ Important settings include:
 - `[cores]`: lives, claim capacity, `clearance_outward_blocks` (four by default), hit/replacement cooldowns and cost, reconciliation batch size, enemy-core spacing, and an optional anti-corridor distance cap (`0` disables the cap).
 - `[territory_ui]`: maximum map pan distance, five chunks by default.
 - `[zones]`: explicit safe-zone and war-zone chunk buffers.
+- `[scoreboard]`: enable or disable the built-in faction sidebar (disable it when using CalabazaBoard).
 - `[economy]`: `standalone` or `external`; the external provider defaults to `CalabazaBank`.
 - `[ipc]`: event journal retention and live-delivery interval.
 - `[ranks.*]`: membership, territory, economy, diplomacy, war, home, trade, and core permissions.

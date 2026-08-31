@@ -58,6 +58,9 @@ max_claim_distance_from_core = 0
 max_pan_steps = 5
 refresh_cooldown_seconds = 2
 
+[scoreboard]
+enabled = true
+
 [zones]
 safe_buffer_chunks = 1
 war_buffer_chunks = 0
