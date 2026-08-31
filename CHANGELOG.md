@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.2
+
+- Changed arena spawn and server-zone coordinate selection from block interaction to cancelled block-break events, preventing one right-click from recording both setup positions.
+
 ## 0.4.1
 
 - Built against Pumpkin commit `c01ddb7b65b0be9641eb2273740ce8e1a04b7807`.

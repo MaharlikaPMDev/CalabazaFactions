@@ -52,11 +52,11 @@ Java territory controls use `[↑][↓][←][→][BOOK][RECENTER][REFRESH][CORE 
 - `/faction ready` — the first leader shortens preparation to five minutes; both leaders ready starts immediately.
 - `/faction shield` — activate a configurable shield, followed by a declaration cooldown.
 - `/faction paypow <player>` — pay ransom from the faction bank.
-- `/faction setarena [name]` — admin wizard: tap the first Team 1 and Team 2 spawn blocks.
+- `/faction setarena [name]` — admin wizard: break the first Team 1 and Team 2 spawn blocks (the breaks are cancelled).
 - `/faction addarenaspawn <arena> <1|2>` — append a spawn to one side's group.
 - `/faction delarena <arena>`
 - `/faction arenas`
-- `/faction setzone <name> <safe|war>` — admin wizard: tap two opposite corners, then preview whole-chunk bounds and configured buffer.
+- `/faction setzone <name> <safe|war>` — admin wizard: break two opposite corner blocks (the breaks are cancelled), then preview whole-chunk bounds and configured buffer.
 - `/faction convertzone <legacy-zone>` — preview conversion of a preserved block-coordinate zone to buffered whole chunks.
 - `/faction zoneconfirm` or `/faction zonecancel`
 - `/faction delzone <name>`

@@ -1420,7 +1420,7 @@ fn arena_command(
                     },
                 );
             Ok(format!(
-                "Arena '{arena}' setup started. Tap Team 1's first spawn block."
+                "Arena '{arena}' setup started. Break Team 1's first spawn block."
             ))
         }
         "addarenaspawn" => {
@@ -1441,7 +1441,7 @@ fn arena_command(
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .insert(player_id.into(), ArenaSetup::Spawn { arena, side });
-            Ok("Tap the block for the additional arena spawn.".into())
+            Ok("Break the block for the additional arena spawn.".into())
         }
         "delarena" => {
             let arena =
@@ -1508,7 +1508,7 @@ fn zone_command(
                     },
                 );
             Ok(format!(
-                "Zone '{id}' setup started. Tap the first corner block."
+                "Zone '{id}' setup started. Break the first corner block."
             ))
         }
         "convertzone" => {
@@ -2067,6 +2067,21 @@ impl EventHandler<PlayerInteractEvent> for Interact {
         mut event: EventData<PlayerInteractEvent>,
     ) -> EventData<PlayerInteractEvent> {
         let id = pid(&event.player);
+        if self
+            .0
+            .arena_setup
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key(&id)
+            || self
+                .0
+                .zone_setup
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains_key(&id)
+        {
+            return event;
+        }
         let arena_setup = self
             .0
             .arena_setup
@@ -2381,6 +2396,163 @@ impl EventHandler<BlockBreakEvent> for Break {
         server: Server,
         mut event: EventData<BlockBreakEvent>,
     ) -> EventData<BlockBreakEvent> {
+        if let Some(player) = &event.player {
+            let id = pid(player);
+            let location = Location {
+                world: player.get_world().get_id(),
+                x: f64::from(event.block_pos.x) + 0.5,
+                y: f64::from(event.block_pos.y) + 1.0,
+                z: f64::from(event.block_pos.z) + 0.5,
+            };
+            let arena_setup = self
+                .0
+                .arena_setup
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(&id)
+                .cloned();
+            if let Some(setup) = arena_setup {
+                event.cancelled = true;
+                match setup {
+                    ArenaSetup::Pair { arena, team1: None } => {
+                        self.0
+                            .arena_setup
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .insert(
+                                id,
+                                ArenaSetup::Pair {
+                                    arena,
+                                    team1: Some(location),
+                                },
+                            );
+                        player.send_system_message(
+                            TextComponent::text(
+                                "Team 1 spawn recorded. Break Team 2's first spawn block.",
+                            ),
+                            false,
+                        );
+                    }
+                    ArenaSetup::Pair {
+                        arena,
+                        team1: Some(team1),
+                    } => {
+                        self.0
+                            .arena_setup
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .remove(&id);
+                        let result = self.0.mutate(&id, "set-arena", |state| {
+                            state.arenas.insert(
+                                arena.clone(),
+                                Arena {
+                                    id: arena.clone(),
+                                    team1_spawns: vec![team1],
+                                    team2_spawns: vec![location],
+                                    enabled: true,
+                                },
+                            );
+                            Ok(())
+                        });
+                        let message = result
+                            .map(|()| format!("Arena '{arena}' saved with both spawn groups."))
+                            .unwrap_or_else(|error| error);
+                        player.send_system_message(TextComponent::text(&message), false);
+                    }
+                    ArenaSetup::Spawn { arena, side } => {
+                        self.0
+                            .arena_setup
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .remove(&id);
+                        let result = self.0.mutate(&id, "add-arena-spawn", |state| {
+                            let entry =
+                                state.arenas.entry(arena.clone()).or_insert_with(|| Arena {
+                                    id: arena.clone(),
+                                    team1_spawns: vec![],
+                                    team2_spawns: vec![],
+                                    enabled: true,
+                                });
+                            if side == 1 {
+                                entry.team1_spawns.push(location);
+                            } else {
+                                entry.team2_spawns.push(location);
+                            }
+                            Ok(())
+                        });
+                        let message = result
+                            .map(|()| format!("Added a Team {side} spawn to arena '{arena}'."))
+                            .unwrap_or_else(|error| error);
+                        player.send_system_message(TextComponent::text(&message), false);
+                    }
+                }
+                return event;
+            }
+
+            let zone_setup = self
+                .0
+                .zone_setup
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(&id)
+                .cloned();
+            if let Some(setup) = zone_setup {
+                event.cancelled = true;
+                let corner = Location {
+                    x: f64::from(event.block_pos.x),
+                    y: f64::from(event.block_pos.y),
+                    z: f64::from(event.block_pos.z),
+                    ..location
+                };
+                if let Some(first) = setup.first {
+                    let buffer = match setup.kind {
+                        ZoneKind::Safe => self.0.config.zones.safe_buffer_chunks,
+                        ZoneKind::War => self.0.config.zones.war_buffer_chunks,
+                    }
+                    .max(0);
+                    let first_x = (first.x.floor() as i32).div_euclid(16);
+                    let first_z = (first.z.floor() as i32).div_euclid(16);
+                    let second_x = (corner.x.floor() as i32).div_euclid(16);
+                    let second_z = (corner.z.floor() as i32).div_euclid(16);
+                    let width = (first_x - second_x).abs() + 1 + buffer * 2;
+                    let height = (first_z - second_z).abs() + 1 + buffer * 2;
+                    self.0
+                        .zone_setup
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .insert(
+                            id,
+                            ZoneSetup {
+                                first: Some(first),
+                                second: Some(corner),
+                                ..setup
+                            },
+                        );
+                    player.send_system_message(TextComponent::text(&format!("Zone preview: {width}x{height} chunks (buffer {buffer}), {} total. Use /faction zoneconfirm or /faction zonecancel.", width.saturating_mul(height))), false);
+                } else {
+                    self.0
+                        .zone_setup
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .insert(
+                            id,
+                            ZoneSetup {
+                                first: Some(corner),
+                                second: None,
+                                ..setup
+                            },
+                        );
+                    player.send_system_message(
+                        TextComponent::text(
+                            "First corner recorded. Break the opposite corner block.",
+                        ),
+                        false,
+                    );
+                }
+                return event;
+            }
+        }
+
         let world = event
             .player
             .as_ref()
